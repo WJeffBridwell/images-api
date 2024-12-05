@@ -9,6 +9,7 @@ pub async fn run(images_dir: PathBuf) -> std::io::Result<actix_web::dev::Server>
         App::new()
             .app_data(images_dir.clone())
             .service(health_check)
+            .service(list_images)
             .service(serve_image)
             .service(image_info)
     })

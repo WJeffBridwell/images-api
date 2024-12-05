@@ -1,0 +1,178 @@
+openapi: 3.0.0
+info:
+  title: Images API
+  version: '1.0'
+  description: High-performance image serving API
+servers:
+  - url: http://localhost:8081
+    description: Local development server
+paths:
+  /health:
+    get:
+      summary: Health check endpoint
+      responses:
+        '200':
+          description: Service health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  timestamp:
+                    type: string
+                    format: date-time
+                  version:
+                    type: string
+                    example: "0.1.0"
+
+  /images:
+    get:
+      summary: List available images
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+          description: Page number for pagination
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+          description: Number of items per page
+        - name: format
+          in: query
+          schema:
+            type: string
+          description: Filter by image format
+        - name: min_size
+          in: query
+          schema:
+            type: integer
+          description: Minimum file size in bytes
+        - name: max_size
+          in: query
+          schema:
+            type: integer
+          description: Maximum file size in bytes
+        - name: tag
+          in: query
+          schema:
+            type: string
+          description: Filter by image tag
+        - name: include_data
+          in: query
+          schema:
+            type: boolean
+          description: Include base64 image data
+        - name: include_thumbnail
+          in: query
+          schema:
+            type: boolean
+          description: Include base64 thumbnail data
+      responses:
+        '200':
+          description: List of images
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  images:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        filename:
+                          type: string
+                        size_bytes:
+                          type: integer
+                        last_modified:
+                          type: string
+                          format: date-time
+                        format:
+                          type: string
+                        dimensions:
+                          type: array
+                          items:
+                            type: integer
+                          minItems: 2
+                          maxItems: 2
+                        tags:
+                          type: array
+                          items:
+                            type: string
+                        base64_data:
+                          type: string
+                        thumbnail_data:
+                          type: string
+                  pagination:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      page:
+                        type: integer
+                      per_page:
+                        type: integer
+                      total_pages:
+                        type: integer
+
+  /images/{filename}:
+    get:
+      summary: Serve a specific image
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the image file
+      responses:
+        '200':
+          description: The requested image
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+
+  /images/{filename}/info:
+    get:
+      summary: Get image metadata
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Name of the image file
+      responses:
+        '200':
+          description: Image metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  filename:
+                    type: string
+                  size_bytes:
+                    type: integer
+                  last_modified:
+                    type: string
+                    format: date-time
+                  format:
+                    type: string
+                  dimensions:
+                    type: array
+                    items:
+                      type: integer
+                    minItems: 2
+                    maxItems: 2
+                  tags:
+                    type: array
+                    items:
+                      type: string

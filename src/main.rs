@@ -1,109 +1,55 @@
-use actix_web::{get, web, HttpResponse, Result};
-use std::path::{Path, PathBuf};
-use anyhow::Context;
-use log::info;
-use images_api::startup;
+use actix_web::{web, App, HttpServer};
+use log::{info, error};
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use serde::Serialize;
-use chrono;
-use image::{io, GenericImageView};
 
-#[derive(Serialize)]
-struct ImageInfo {
-    filename: String,
-    dimensions: (u32, u32),
-    size_bytes: u64,
-    last_modified: String,
-}
+mod handlers;
+mod image_processor;
 
-async fn get_image_info(path: &Path) -> anyhow::Result<ImageInfo> {
-    let reader = io::Reader::open(path)
-        .context("Failed to open image")?;
-    let img = reader.decode().context("Failed to decode image")?;
-    let metadata = path.metadata().context("Failed to get metadata")?;
-    
-    Ok(ImageInfo {
-        filename: path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string(),
-        dimensions: img.dimensions(),
-        size_bytes: metadata.len(),
-        last_modified: metadata.modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
-            .flatten()
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| "unknown".to_string()),
-    })
-}
-
-#[get("/images/{filename}")]
-async fn serve_image(filename: web::Path<String>) -> Result<HttpResponse> {
-    let image_path = PathBuf::from("images").join(filename.as_ref());
-    
-    if !image_path.exists() {
-        return Ok(HttpResponse::NotFound().body("Image not found"));
-    }
-
-    let content = std::fs::read(&image_path)
-        .map_err(|e| {
-            log::error!("Failed to read image: {}", e);
-            actix_web::error::ErrorInternalServerError("Failed to read image")
-        })?;
-
-    let content_type = match image_path.extension().and_then(|ext| ext.to_str()) {
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("png") => "image/png",
-        Some("gif") => "image/gif",
-        _ => "application/octet-stream",
-    };
-
-    Ok(HttpResponse::Ok()
-        .content_type(content_type)
-        .body(content))
-}
-
-#[get("/images/{filename}/info")]
-async fn image_info(filename: web::Path<String>) -> Result<HttpResponse> {
-    let image_path = PathBuf::from("images").join(filename.as_ref());
-    
-    if !image_path.exists() {
-        return Ok(HttpResponse::NotFound().body("Image not found"));
-    }
-
-    let info = get_image_info(&image_path)
-        .await
-        .map_err(|e| {
-            log::error!("Failed to get image info: {}", e);
-            actix_web::error::ErrorInternalServerError("Failed to get image info")
-        })?;
-
-    Ok(HttpResponse::Ok().json(info))
-}
-
-#[get("/health")]
-async fn health_check() -> Result<HttpResponse> {
-    info!("Health check endpoint called");
-    let status = serde_json::json!({
-        "status": "healthy",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "version": env!("CARGO_PKG_VERSION")
-    });
-    info!("Returning health status: {:?}", status);
-    Ok(HttpResponse::Ok().json(status))
+#[derive(Serialize, Clone, Default)]
+pub struct Config {
+    pub images_dir: PathBuf,
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    env_logger::init();
+
+    let images_dir = PathBuf::from("/Volumes/VideosNew/Models");
+    if !images_dir.exists() {
+        error!("Images directory does not exist: {:?}", images_dir);
+        return Ok(());
+    }
+
+    let config = Config {
+        images_dir: images_dir.clone(),
+    };
+
+    let images_dir_data = web::Data::new(images_dir.clone());
+    let image_cache = web::Data::new(Arc::new(RwLock::new(handlers::ImageCache::new())));
+    let image_processor = web::Data::new(image_processor::ImageProcessor::new());
+
+    // Populate the cache initially
+    if let Ok(mut cache) = image_cache.write() {
+        if let Err(e) = cache.populate(&images_dir) {
+            error!("Failed to populate image cache: {}", e);
+        }
+    }
+
+    info!("Starting server on http://127.0.0.1:8081");
     
-    // Create images directory if it doesn't exist
-    std::fs::create_dir_all("images")?;
-    
-    let images_dir = PathBuf::from("images");
-    info!("Starting server with images directory: {:?}", images_dir);
-    let server = startup::run(images_dir).await?;
-    
-    server.await
+    HttpServer::new(move || {
+        App::new()
+            .app_data(images_dir_data.clone())
+            .app_data(image_cache.clone())
+            .app_data(image_processor.clone())
+            .service(handlers::health_check)
+            .service(handlers::serve_image)
+            .service(handlers::image_info)
+            .service(handlers::list_images)
+    })
+    .bind("127.0.0.1:8081")?
+    .run()
+    .await
 }

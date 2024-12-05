@@ -1,8 +1,22 @@
 pub mod handlers;
 pub mod startup;
+pub mod image_processor;
 
 pub use handlers::*;
 pub use startup::*;
+
+use actix_web::web;
+use image_processor::ImageProcessor;
+
+pub fn init_services(cfg: &mut web::ServiceConfig) {
+    let processor = web::Data::new(ImageProcessor::new());
+    
+    cfg.app_data(processor.clone())
+        .service(handlers::health_check)
+        .service(handlers::list_images)
+        .service(handlers::serve_image)
+        .service(handlers::image_info);
+}
 
 #[cfg(test)]
 mod tests {
