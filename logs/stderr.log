@@ -1,0 +1,84 @@
+[2024-12-05T11:55:11Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:55:21Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:55:32Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:55:42Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:55:52Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:56:02Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:56:12Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:56:22Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:56:32Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:56:42Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:56:52Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:57:02Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:57:14Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:57:24Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:57:34Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:57:45Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:57:55Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:58:05Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:58:15Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:58:25Z INFO  image_api] Starting server at http://127.0.0.1:8080
+Error: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+[2024-12-05T11:58:35Z INFO  image_api] Starting server at http://127.0.0.1:8081
+[2024-12-05T11:58:35Z INFO  actix_server::builder] starting 12 workers
+[2024-12-05T11:58:35Z INFO  actix_server::server] Actix runtime found; starting in Actix runtime
+[2024-12-05T11:58:35Z INFO  actix_server::server] starting service: "actix-web-service-127.0.0.1:8081", workers: 12, listening on: 127.0.0.1:8081
+[2024-12-05T11:58:42Z INFO  actix_server::server] SIGTERM received; starting graceful shutdown
+[2024-12-05T11:58:42Z INFO  actix_server::accept] accept thread stopped
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:58:42Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T11:59:43Z INFO  image_api] Starting server at http://127.0.0.1:8081
+[2024-12-05T11:59:43Z INFO  actix_server::builder] starting 12 workers
+[2024-12-05T11:59:43Z INFO  actix_server::server] Actix runtime found; starting in Actix runtime
+[2024-12-05T11:59:43Z INFO  actix_server::server] starting service: "actix-web-service-127.0.0.1:8081", workers: 12, listening on: 127.0.0.1:8081
+[2024-12-05T12:00:10Z INFO  image_api] Health check endpoint called
+[2024-12-05T12:00:10Z INFO  image_api] Returning health status: Object {"status": String("healthy"), "timestamp": String("2024-12-05T12:00:10.498168+00:00"), "version": String("0.1.0")}
+[2024-12-05T12:01:21Z INFO  actix_server::server] SIGTERM received; starting graceful shutdown
+[2024-12-05T12:01:21Z INFO  actix_server::accept] accept thread stopped
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:01:21Z INFO  actix_server::worker] shutting down idle worker
+[2024-12-05T12:04:14Z INFO  image_api] Starting server at http://127.0.0.1:8081
+[2024-12-05T12:04:14Z INFO  actix_server::builder] starting 12 workers
+[2024-12-05T12:04:14Z INFO  actix_server::server] Actix runtime found; starting in Actix runtime
+[2024-12-05T12:04:14Z INFO  actix_server::server] starting service: "actix-web-service-127.0.0.1:8081", workers: 12, listening on: 127.0.0.1:8081
+[2024-12-05T12:04:20Z INFO  image_api] Health check endpoint called
+[2024-12-05T12:04:20Z INFO  image_api] Returning health status: Object {"status": String("healthy"), "timestamp": String("2024-12-05T12:04:20.574641+00:00"), "version": String("0.1.0")}
