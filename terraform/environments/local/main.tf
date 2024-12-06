@@ -15,44 +15,10 @@ locals {
   service_name = "images-api"
   user         = "jeffbridwell"
   working_dir  = "/Users/${local.user}/CascadeProjects/images-api"
-  binary_path  = "${local.working_dir}/target/release/image-api"
+  binary_path  = "${local.working_dir}/target/release/images-api"
 }
 
-# Create LaunchAgent plist file for auto-start
-resource "local_file" "launch_agent" {
-  filename = "/Users/${local.user}/Library/LaunchAgents/com.${local.user}.${local.service_name}.plist"
-  content  = <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.${local.user}.${local.service_name}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${local.binary_path}</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>${local.working_dir}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>RUST_LOG</key>
-        <string>info</string>
-    </dict>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>${local.working_dir}/logs/stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>${local.working_dir}/logs/stderr.log</string>
-</dict>
-</plist>
-EOF
-}
-
-# Ensure logs directory exists
+# Create logs directory
 resource "null_resource" "create_logs_dir" {
   provisioner "local-exec" {
     command = "mkdir -p ${local.working_dir}/logs"
@@ -67,36 +33,24 @@ resource "null_resource" "build_release" {
   }
 }
 
-# Health check resource
-resource "null_resource" "health_check" {
-  depends_on = [null_resource.build_release, local_file.launch_agent]
-
-  # Runs health check after creating resources
+# Run the service directly
+resource "null_resource" "run_service" {
+  depends_on = [null_resource.build_release, null_resource.create_logs_dir]
+  
   provisioner "local-exec" {
-    command = <<EOF
-      # Wait for service to start
-      sleep 5
-      
-      # Check if service is running
-      if ! curl -s http://localhost:8081/health > /dev/null; then
-        echo "Health check failed: Service is not responding"
-        exit 1
-      fi
-      
-      # Check if images directory exists
-      if [ ! -d "${local.working_dir}/images" ]; then
-        echo "Health check failed: Images directory not found"
-        exit 1
-      fi
-      
-      echo "Health checks passed successfully"
-    EOF
+    command = "nohup ${local.binary_path} > ${local.working_dir}/logs/stdout.log 2> ${local.working_dir}/logs/stderr.log & echo $! > /Users/jeffbridwell/CascadeProjects/images-api/api.pid"
+    working_dir = local.working_dir
+    environment = {
+      RUST_LOG = "debug"
+      IMAGES_DIR = "/Volumes/VideosNew/Models"
+    }
   }
-}
 
-# Output important information
-output "service_status" {
-  value = "LaunchAgent created at ~/Library/LaunchAgents/com.${local.user}.${local.service_name}.plist"
+  # Cleanup on destroy
+  provisioner "local-exec" {
+    when    = destroy
+    command = "kill -9 $(cat /Users/jeffbridwell/CascadeProjects/images-api/api.pid) || true && rm -f /Users/jeffbridwell/CascadeProjects/images-api/api.pid"
+  }
 }
 
 output "health_check_endpoint" {

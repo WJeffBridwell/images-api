@@ -1,0 +1,273 @@
+openapi: 3.0.3
+info:
+  title: Images API
+  description: |
+    A high-performance image serving and processing API built with Rust and Actix Web.
+    Provides endpoints for image retrieval, processing, and metadata management.
+  version: 1.0.0
+  contact:
+    name: Jeff Bridwell
+servers:
+  - url: http://localhost:8081
+    description: Local development server
+
+paths:
+  /health:
+    get:
+      summary: Health check endpoint
+      description: Returns the current health status of the service
+      operationId: healthCheck
+      tags:
+        - System
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /images:
+    get:
+      summary: List available images
+      description: Returns a paginated list of available images with metadata
+      operationId: listImages
+      tags:
+        - Images
+      parameters:
+        - name: page
+          in: query
+          description: Page number for pagination
+          required: false
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: per_page
+          in: query
+          description: Number of items per page
+          required: false
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+        - name: sort_by
+          in: query
+          description: Field to sort by
+          required: false
+          schema:
+            type: string
+            enum: [filename, size, last_modified]
+        - name: order
+          in: query
+          description: Sort order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        '200':
+          description: Successfully retrieved image list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageList'
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /images/{filename}:
+    get:
+      summary: Serve image file
+      description: Returns the requested image file, optionally processed according to query parameters
+      operationId: serveImage
+      tags:
+        - Images
+      parameters:
+        - name: filename
+          in: path
+          description: Name of the image file
+          required: true
+          schema:
+            type: string
+        - name: width
+          in: query
+          description: Desired width for resizing
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: height
+          in: query
+          description: Desired height for resizing
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: rotate
+          in: query
+          description: Rotation angle in degrees
+          required: false
+          schema:
+            type: number
+            minimum: 0
+            maximum: 360
+      responses:
+        '200':
+          description: Successfully retrieved image
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Image not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /images/{filename}/info:
+    get:
+      summary: Get image metadata
+      description: Returns metadata about the specified image
+      operationId: getImageInfo
+      tags:
+        - Images
+      parameters:
+        - name: filename
+          in: path
+          description: Name of the image file
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successfully retrieved image metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageMetadata'
+        '404':
+          description: Image not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "healthy"
+        timestamp:
+          type: string
+          format: date-time
+      required:
+        - status
+        - timestamp
+
+    ImageList:
+      type: object
+      properties:
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageMetadata'
+        total:
+          type: integer
+          description: Total number of images
+        page:
+          type: integer
+          description: Current page number
+        per_page:
+          type: integer
+          description: Number of items per page
+      required:
+        - images
+        - total
+        - page
+        - per_page
+
+    ImageMetadata:
+      type: object
+      properties:
+        filename:
+          type: string
+          example: "example.jpg"
+        dimensions:
+          type: array
+          items:
+            type: integer
+          minItems: 2
+          maxItems: 2
+          example: [800, 600]
+        size_bytes:
+          type: integer
+          example: 1024
+        last_modified:
+          type: string
+          format: date-time
+        format:
+          type: string
+          example: "jpeg"
+      required:
+        - filename
+        - size_bytes
+        - last_modified
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+        code:
+          type: string
+          description: Error code
+      required:
+        - error
+
+tags:
+  - name: System
+    description: System-related endpoints
+  - name: Images
+    description: Image management endpoints

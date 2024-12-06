@@ -1,133 +1,228 @@
+/*! 
+ * Images API - Image Processing Module
+ * 
+ * This module handles all image processing operations including:
+ * - Image loading and validation
+ * - Format conversion
+ * - Resizing and rotation
+ * - Metadata extraction
+ * 
+ * It provides a thread-safe interface for handling image operations
+ * with error handling and validation.
+ */
+
 use std::path::Path;
-use std::sync::Arc;
-use std::io::Cursor;
-use image::{DynamicImage, ImageFormat, GenericImageView, ImageOutputFormat};
-use lru::LruCache;
-use tokio::sync::RwLock;
-use anyhow::Result;
-use base64::Engine;
+use image::{ImageFormat, GenericImageView};
+use tokio::fs;
+use anyhow::{Result, Context};
 
-const THUMBNAIL_SIZE: u32 = 300; // Maximum thumbnail dimension
-const CACHE_SIZE: usize = 1000; // Number of items to cache
+/// Image processing error types
+#[derive(Debug)]
+pub enum ImageError {
+    /// File system related errors
+    IoError(std::io::Error),
+    /// Image processing errors
+    ImageError(image::ImageError),
+    /// Invalid input parameters
+    ValidationError(String),
+}
 
-#[derive(Clone)]
+/// Image metadata structure
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ImageData {
-    pub data_uri: String,
-    pub format: ImageFormat,
+    /// Raw image bytes
+    pub content: Vec<u8>,
+    /// Image dimensions (width, height)
     pub dimensions: (u32, u32),
+    /// Size of image in bytes
     pub size_bytes: usize,
+    /// Image format (jpg, png, etc.)
+    pub format: ImageFormat,
 }
 
-pub struct ImageProcessor {
-    thumbnail_cache: Arc<RwLock<LruCache<String, ImageData>>>,
-    image_cache: Arc<RwLock<LruCache<String, ImageData>>>,
-}
+/// Main image processor struct
+pub struct ImageProcessor;
 
 impl ImageProcessor {
+    /// Creates a new ImageProcessor instance
     pub fn new() -> Self {
-        Self {
-            thumbnail_cache: Arc::new(RwLock::new(LruCache::new(CACHE_SIZE.try_into().unwrap()))),
-            image_cache: Arc::new(RwLock::new(LruCache::new(CACHE_SIZE.try_into().unwrap()))),
-        }
+        ImageProcessor
     }
 
-    pub async fn get_image_data(&self, path: &Path, thumbnail: bool) -> Result<ImageData> {
-        let path_str = path.to_string_lossy().to_string();
-        
-        // Check cache first
-        let cache = if thumbnail {
-            &self.thumbnail_cache
-        } else {
-            &self.image_cache
-        };
-        
-        // Try to get from cache
-        {
-            let cache_read = cache.read().await;
-            if let Some(data) = cache_read.peek(&path_str) {
-                return Ok(data.clone());
-            }
-        }
-        
-        // Load and process image
-        let img = image::open(path)?;
-        let format = match path.extension().and_then(|ext| ext.to_str()) {
-            Some("jpg") | Some("jpeg") => ImageFormat::Jpeg,
-            Some("png") => ImageFormat::Png,
-            Some("gif") => ImageFormat::Gif,
-            _ => ImageFormat::Jpeg, // default
-        };
-        
-        let processed_img = if thumbnail {
-            self.create_thumbnail(&img)
-        } else {
-            img
-        };
-        
-        let data = self.create_image_data(processed_img, format)?;
-        
-        // Cache the result
-        {
-            let mut cache_write = cache.write().await;
-            cache_write.put(path_str, data.clone());
-        }
-        
-        Ok(data)
-    }
+    /// Loads and validates an image file
+    /// 
+    /// Parameters:
+    /// - path: Path to the image file
+    /// - include_data: Whether to include raw image data in response
+    pub async fn get_image_data(
+        &self,
+        path: &Path,
+        include_data: bool,
+    ) -> Result<ImageData, ImageError> {
+        let content = fs::read(path)
+            .await
+            .with_context(|| format!("Failed to read image file: {}", path.display()))?;
 
-    fn create_thumbnail(&self, img: &DynamicImage) -> DynamicImage {
-        let (width, height) = img.dimensions();
-        
-        if width <= THUMBNAIL_SIZE && height <= THUMBNAIL_SIZE {
-            return img.clone();
-        }
-        
-        let ratio = width as f32 / height as f32;
-        let (new_width, new_height) = if ratio > 1.0 {
-            (THUMBNAIL_SIZE, (THUMBNAIL_SIZE as f32 / ratio) as u32)
-        } else {
-            ((THUMBNAIL_SIZE as f32 * ratio) as u32, THUMBNAIL_SIZE)
-        };
-        
-        img.thumbnail(new_width, new_height)
-    }
+        let img = image::load_from_memory(&content)
+            .with_context(|| "Failed to load image from memory")?;
 
-    fn create_image_data(&self, img: DynamicImage, format: ImageFormat) -> Result<ImageData> {
-        let mut buffer = Vec::new();
-        let mut cursor = Cursor::new(&mut buffer);
-        
-        let output_format = match format {
-            ImageFormat::Jpeg => ImageOutputFormat::Jpeg(85), // 85% quality
-            ImageFormat::Png => ImageOutputFormat::Png,
-            ImageFormat::Gif => ImageOutputFormat::Gif,
-            _ => ImageOutputFormat::Jpeg(85),
-        };
-        
-        img.write_to(&mut cursor, output_format)?;
-        
-        let mime_type = match format {
-            ImageFormat::Jpeg => "image/jpeg",
-            ImageFormat::Png => "image/png",
-            ImageFormat::Gif => "image/gif",
-            _ => "image/jpeg",
-        };
-        
-        let data_uri = format!(
-            "data:{};base64,{}",
-            mime_type,
-            base64::engine::general_purpose::STANDARD.encode(&buffer)
-        );
-        
+        let format = ImageFormat::from_path(path)
+            .with_context(|| "Failed to determine image format")?;
+
         Ok(ImageData {
-            data_uri,
-            format,
             dimensions: img.dimensions(),
-            size_bytes: buffer.len(),
+            format,
+            size_bytes: content.len(),
+            content,
         })
     }
 
-    pub async fn clear_caches(&self) {
-        self.thumbnail_cache.write().await.clear();
-        self.image_cache.write().await.clear();
+    /// Resizes an image
+    /// 
+    /// Parameters:
+    /// - path: Path to the image file
+    /// - width: Target width
+    /// - height: Target height
+    pub async fn resize_image(
+        &self,
+        path: &Path,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, ImageError> {
+        let content = fs::read(path)
+            .await
+            .with_context(|| format!("Failed to read image file: {}", path.display()))?;
+
+        let img = image::load_from_memory(&content)
+            .with_context(|| "Failed to load image from memory")?;
+
+        let resized = img.resize(width, height, image::imageops::FilterType::Lanczos3);
+        
+        let format = ImageFormat::from_path(path)
+            .with_context(|| "Failed to determine image format")?;
+
+        let mut buffer = Vec::new();
+        resized.write_to(&mut std::io::Cursor::new(&mut buffer), format)
+            .with_context(|| "Failed to write resized image")?;
+
+        Ok(buffer)
+    }
+
+    /// Rotates an image
+    /// 
+    /// Parameters:
+    /// - path: Path to the image file
+    /// - angle: Rotation angle in degrees
+    pub async fn rotate_image(
+        &self,
+        path: &Path,
+        angle: i32,
+    ) -> Result<Vec<u8>, ImageError> {
+        let content = fs::read(path)
+            .await
+            .with_context(|| format!("Failed to read image file: {}", path.display()))?;
+
+        let img = image::load_from_memory(&content)
+            .with_context(|| "Failed to load image from memory")?;
+
+        // Normalize degrees to be in [0, 360)
+        let normalized_degrees = ((angle % 360) + 360) % 360;
+        
+        let rotated = match normalized_degrees {
+            90 => img.rotate90(),
+            180 => img.rotate180(),
+            270 => img.rotate270(),
+            _ => return Err(anyhow::anyhow!("Only 90-degree rotations are supported")),
+        };
+
+        let format = ImageFormat::from_path(path)
+            .with_context(|| "Failed to determine image format")?;
+
+        let mut buffer = Vec::new();
+        rotated.write_to(&mut std::io::Cursor::new(&mut buffer), format)
+            .with_context(|| "Failed to write rotated image")?;
+
+        Ok(buffer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::DynamicImage;
+
+    /// Creates a test image
+    fn create_test_image() -> Vec<u8> {
+        // Create a 2x2 black JPEG image
+        let img = DynamicImage::new_rgb8(2, 2);
+        let mut buffer = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buffer), ImageFormat::Jpeg)
+            .expect("Failed to create test image");
+        buffer
+    }
+
+    #[tokio::test]
+    async fn test_get_image_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let test_path = temp_dir.path().join("test.jpg");
+        
+        let test_image = create_test_image();
+        std::fs::write(&test_path, &test_image).unwrap();
+
+        let processor = ImageProcessor::new();
+        let result = processor.get_image_data(&test_path, false).await;
+        
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        assert_eq!(data.dimensions, (2, 2));
+        assert_eq!(data.format, ImageFormat::Jpeg);
+        assert!(data.size_bytes > 0);
+        assert!(!data.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resize_image() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let test_path = temp_dir.path().join("test.jpg");
+        
+        let test_image = create_test_image();
+        std::fs::write(&test_path, &test_image).unwrap();
+
+        let processor = ImageProcessor::new();
+        let result = processor.resize_image(&test_path, 4, 4).await;
+        
+        assert!(result.is_ok());
+        let resized_data = result.unwrap();
+        assert!(!resized_data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_rotate_image() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let test_path = temp_dir.path().join("test.jpg");
+        
+        let test_image = create_test_image();
+        std::fs::write(&test_path, &test_image).unwrap();
+
+        let processor = ImageProcessor::new();
+        let result = processor.rotate_image(&test_path, 90).await;
+        
+        assert!(result.is_ok());
+        let rotated_data = result.unwrap();
+        assert!(!rotated_data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_image() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let test_path = temp_dir.path().join("invalid.jpg");
+        
+        let invalid_data = b"not an image".to_vec();
+        std::fs::write(&test_path, &invalid_data).unwrap();
+
+        let processor = ImageProcessor::new();
+        let result = processor.get_image_data(&test_path, false).await;
+        
+        assert!(result.is_err());
     }
 }

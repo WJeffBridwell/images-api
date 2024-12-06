@@ -24,12 +24,36 @@ async fn fetch_images(page: usize, include_thumbnails: bool, include_data: bool)
     let _resp = test::call_service(&app, req).await;
 }
 
+async fn stream_image(image_size: &str) {
+    let images_dir = web::Data::new(PathBuf::from("/Volumes/VideosNew/Models"));
+    let app = test::init_service(
+        App::new()
+            .app_data(images_dir.clone())
+            .service(serve_image)
+    ).await;
+
+    // Select image based on size category
+    let image_path = match image_size {
+        "small" => "/images/eva-p.jpg",  // Known small image
+        "medium" => "/images/medium-sample.jpg",  // Add a medium-sized image
+        "large" => "/images/large-sample.jpg",    // Add a large image
+        _ => "/images/eva-p.jpg"
+    };
+
+    let req = test::TestRequest::get()
+        .uri(image_path)
+        .to_request();
+        
+    let mut resp = test::call_service(&app, req).await;
+    let _bytes = test::read_body(resp).await;
+}
+
 pub fn image_loading_benchmark(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
     let mut group = c.benchmark_group("image_loading");
-    group.measurement_time(Duration::from_secs(20));
-    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(30));
+    group.sample_size(20);
 
     // Test listing without images
     group.bench_function("list_only", |b| {
@@ -49,20 +73,27 @@ pub fn image_loading_benchmark(c: &mut Criterion) {
         });
     });
 
-    // Test with full images
-    group.bench_function("with_full_images", |b| {
+    // Test streaming performance for different image sizes
+    group.bench_function("stream_small_image", |b| {
         b.iter(|| {
             runtime.block_on(async {
-                fetch_images(black_box(1), false, true).await
+                stream_image("small").await
             })
         });
     });
 
-    // Test with both thumbnails and images
-    group.bench_function("with_both", |b| {
+    group.bench_function("stream_medium_image", |b| {
         b.iter(|| {
             runtime.block_on(async {
-                fetch_images(black_box(1), true, true).await
+                stream_image("medium").await
+            })
+        });
+    });
+
+    group.bench_function("stream_large_image", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                stream_image("large").await
             })
         });
     });
