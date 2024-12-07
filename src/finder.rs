@@ -1,17 +1,17 @@
 use std::process::Command;
 use std::path::Path;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use log::{info, error, debug};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ContentInfo {
-    content_name: String,
-    content_type: String,
-    content_url: String,
-    content_tags: Vec<String>,
-    content_created: Option<i64>,
-    content_viewed: Option<i64>,
-    content_size: Option<i64>,
+    pub content_name: String,
+    pub content_type: String,
+    pub content_url: String,
+    pub content_tags: Vec<String>,
+    pub content_created: Option<i64>,
+    pub content_viewed: Option<i64>,
+    pub content_size: Option<i64>,
 }
 
 pub fn search_content(image_name: &str) -> Vec<ContentInfo> {

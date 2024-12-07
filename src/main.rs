@@ -23,7 +23,8 @@ use std::sync::{Arc, RwLock};
 use images_api::handlers;
 use images_api::image_processor::ImageProcessor;
 
-type ImageCache = HashMap<String, Vec<u8>>;
+/// Cache type for storing image data
+pub type ImageCache = HashMap<String, Vec<u8>>;
 
 /// Application entry point
 /// 
@@ -75,8 +76,8 @@ mod tests {
 
     #[actix_web::test]
     async fn test_app_configuration() {
-        let processor = web::Data::new(images_api::image_processor::ImageProcessor::new());
-        let image_cache = web::Data::new(std::sync::Arc::new(std::sync::RwLock::new(images_api::ImageCache::new())));
+        let processor = web::Data::new(ImageProcessor::new());
+        let image_cache = web::Data::new(Arc::new(RwLock::new(HashMap::<String, Vec<u8>>::new())));
         let images_dir = web::Data::new(std::path::PathBuf::from("./test_images"));
 
         let app = App::new()

@@ -2,6 +2,10 @@ pub mod handlers;
 pub mod image_processor;
 pub mod finder;
 
+// Re-export main types
+pub use image_processor::ImageProcessor;
+pub use finder::ContentInfo;
+
 #[cfg(test)]
 mod tests {
     use actix_web::{test, web, App};

@@ -195,7 +195,11 @@ paths:
       summary: Search for content related to an image
       description: |
         Searches for movies, archives, and folders related to the given image name
-        using the macOS Finder API.
+        using the macOS Finder API. This endpoint allows you to find content that
+        might be related to an image based on its name, tags, or metadata.
+      operationId: searchImageContent
+      tags:
+        - Content
       parameters:
         - name: image_name
           in: query
@@ -205,7 +209,7 @@ paths:
             type: string
       responses:
         '200':
-          description: List of content items found
+          description: Successfully retrieved related content
           content:
             application/json:
               schema:
@@ -213,9 +217,17 @@ paths:
                 items:
                   $ref: '#/components/schemas/ContentInfo'
         '400':
-          description: Bad request (missing image_name parameter)
+          description: Missing or invalid image name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Internal server error
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
   schemas:
@@ -298,13 +310,13 @@ components:
       properties:
         content_name:
           type: string
-          description: Name of the content item
+          description: Name of the related content
         content_type:
           type: string
-          description: Type of content (movie, archive, folder)
+          description: Type of content (e.g., mp4, zip)
         content_url:
           type: string
-          description: URL or path to the content
+          description: URL or path to access the content
         content_tags:
           type: array
           items:
@@ -313,14 +325,17 @@ components:
         content_created:
           type: integer
           format: int64
+          nullable: true
           description: Unix timestamp when the content was created
         content_viewed:
           type: integer
           format: int64
+          nullable: true
           description: Unix timestamp when the content was last viewed
         content_size:
           type: integer
           format: int64
+          nullable: true
           description: Size of the content in bytes
       required:
         - content_name
@@ -336,3 +351,5 @@ tags:
     description: System-related endpoints
   - name: Images
     description: Image management endpoints
+  - name: Content
+    description: Content-related endpoints

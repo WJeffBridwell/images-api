@@ -287,13 +287,13 @@ pub async fn image_info(
 /// 
 /// This endpoint searches for content (movies, archives, folders) related to an image name
 /// using the macOS Finder API.
-#[get("/image-content/{image_name}")]
+#[get("/image-content")]
 pub async fn search_image_content(
-    image_name: web::Path<String>,
+    query: web::Query<ImageContentQuery>,
 ) -> actix_web::Result<impl Responder> {
-    log::debug!("Received request for image content search with image_name: {}", image_name);
+    log::debug!("Received request for image content search with image_name: {}", query.image_name);
     log::debug!("Calling search_content");
-    let content = crate::finder::search_content(&image_name);
+    let content = crate::finder::search_content(&query.image_name);
     log::debug!("Search complete, found {} content items", content.len());
     log::debug!("Content items: {:?}", content);
     log::debug!("About to construct HttpResponse");
@@ -480,8 +480,7 @@ pub struct OpenInPreviewRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct ImageContentQuery {
-    /// Image name to search for related content
-    pub image_name: Option<String>,
+    pub image_name: String,
 }
 
 /// Query parameters for image listing endpoint
@@ -531,53 +530,87 @@ pub fn init_routes(cfg: &mut web::ServiceConfig) {
 mod tests {
     use super::*;
     use actix_web::{test, http::StatusCode, App, web};
-    use std::sync::{Arc, RwLock};
     use std::collections::HashMap;
-    use std::io::Cursor;
-    use image::{ImageBuffer, Rgb};
-    use log::{debug, LevelFilter};
-    use env_logger;
+    use std::sync::{Arc, RwLock};
     use tempfile::TempDir;
-
-    type ImageCache = HashMap<String, Vec<u8>>;
+    use image::{ImageBuffer, Rgb};
+    use crate::image_processor::ImageProcessor;
+    use crate::finder::ContentInfo;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     async fn setup_test_app() -> (TempDir, impl actix_web::dev::Service<actix_http::Request, Response = actix_web::dev::ServiceResponse, Error = actix_web::Error>) {
-        // Initialize logger
-        let _ = env_logger::builder()
-            .filter_level(LevelFilter::Debug)
-            .is_test(true)
-            .try_init();
+        let temp_dir = TempDir::new().unwrap();
+        
+        // Create test directories
+        let test_dir = temp_dir.path().join("test");
+        fs::create_dir_all(&test_dir).unwrap();
+        
+        // Create test files that mdfind will return
+        let movie_path = test_dir.join("movie1.mp4");
+        let archive_path = test_dir.join("archive1.zip");
+        
+        fs::write(&movie_path, b"test movie data").unwrap();
+        fs::write(&archive_path, b"test archive data").unwrap();
 
-        let temp_dir = tempfile::tempdir().unwrap();
-        let images_dir = temp_dir.path().to_owned();
+        let test_image_path = temp_dir.path().join("test.jpg");
         
-        debug!("Test images directory: {:?}", images_dir);
-        
-        // Create test images directory and ensure it exists
-        std::fs::create_dir_all(&images_dir).unwrap();
-        
-        // Create a test RGB image
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(100, 100);
-        let mut buffer = Vec::new();
-        img.write_to(&mut Cursor::new(&mut buffer), image::ImageFormat::Jpeg)
-            .expect("Failed to create test image");
-        
-        let test_image_path = images_dir.join("test.jpg");
-        debug!("Writing test image to: {:?}", test_image_path);
-        std::fs::write(&test_image_path, &buffer).unwrap();
-        
-        // Verify the file was created
-        assert!(test_image_path.exists(), "Test image file was not created");
-        
-        let processor = web::Data::new(crate::image_processor::ImageProcessor::new());
-        let image_cache = web::Data::new(Arc::new(RwLock::new(ImageCache::new())));
-        let images_dir_data = web::Data::new(images_dir);
+        // Create a test image
+        let img = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(100, 100);
+        img.save(&test_image_path).unwrap();
+
+        // Create a mock scripts directory
+        let mock_dir = temp_dir.path().join("mock_bin");
+        fs::create_dir_all(&mock_dir).unwrap();
+
+        // Create a mock script for mdfind that returns our test files
+        let mock_mdfind = mock_dir.join("mdfind");
+        fs::write(&mock_mdfind, format!(r#"#!/bin/bash
+echo "Mock mdfind executing with query: $@" >&2
+# Always return our test files regardless of the query
+echo "{}/movie1.mp4
+{}/archive1.zip"
+"#, test_dir.display(), test_dir.display())).unwrap();
+        fs::set_permissions(&mock_mdfind, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Create a mock script for mdls that returns fixed metadata
+        let mock_mdls = mock_dir.join("mdls");
+        fs::write(&mock_mdls, r#"#!/bin/bash
+echo "Mock mdls executing with path: $1" >&2
+echo "kMDItemUserTags = (
+    \"tag1\",
+    \"tag2\"
+)
+kMDItemFinderComment = \"Test comment\"
+kMDItemKeywords = \"keyword1, keyword2\""
+"#).unwrap();
+        fs::set_permissions(&mock_mdls, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Add the mock scripts directory to PATH
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let path_var = format!("{}:{}", mock_dir.display(), old_path);
+        std::env::set_var("PATH", &path_var);
+        println!("Current PATH: {}", path_var);
+        println!("Mock scripts directory: {}", mock_dir.display());
+        println!("Test directory: {}", test_dir.display());
+
+        // Verify mock scripts exist and are executable
+        if !mock_mdfind.exists() {
+            panic!("Mock mdfind script does not exist at {}", mock_mdfind.display());
+        }
+        if !mock_mdls.exists() {
+            panic!("Mock mdls script does not exist at {}", mock_mdls.display());
+        }
+
+        let processor = web::Data::new(ImageProcessor::new());
+        let image_cache = web::Data::new(Arc::new(RwLock::new(HashMap::<String, Vec<u8>>::new())));
+        let images_dir = web::Data::new(temp_dir.path().to_path_buf());
 
         let app = test::init_service(
             App::new()
                 .app_data(processor)
                 .app_data(image_cache)
-                .app_data(images_dir_data)
+                .app_data(images_dir)
                 .configure(init_routes)
         ).await;
 
@@ -619,7 +652,7 @@ mod tests {
         
         let body: ImageMetadata = test::read_body_json(resp).await;
         assert_eq!(body.filename, "test.jpg");
-        assert!(body.dimensions.is_some());
+        assert_eq!(body.dimensions, Some((100, 100)));
     }
 
     #[actix_web::test]
@@ -634,5 +667,87 @@ mod tests {
         let body: Vec<ImageMetadata> = test::read_body_json(resp).await;
         assert!(!body.is_empty());
         assert_eq!(body[0].filename, "test.jpg");
+        assert_eq!(body[0].dimensions, Some((100, 100)));
+    }
+
+    #[actix_web::test]
+    async fn test_image_content_search() {
+        let (temp_dir, app) = setup_test_app().await;
+        
+        // Create test files that mdfind will return
+        let test_dir = temp_dir.path().join("test");
+        let movie_path = test_dir.join("movie1.mp4");
+        let archive_path = test_dir.join("archive1.zip");
+        
+        fs::write(&movie_path, b"test movie data").unwrap();
+        fs::write(&archive_path, b"test archive data").unwrap();
+
+        let req = test::TestRequest::get()
+            .uri("/image-content?image_name=test.jpg")
+            .to_request();
+        
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        
+        let body = test::read_body(resp).await;
+        let content: Vec<ContentInfo> = serde_json::from_slice(&body).unwrap();
+        
+        // We should get both files back
+        assert_eq!(content.len(), 2);
+        
+        // Verify the content of the returned files
+        let movie = content.iter().find(|c| c.content_name == "movie1.mp4").unwrap();
+        assert_eq!(movie.content_type, "mp4");
+        assert_eq!(movie.content_url, movie_path.to_str().unwrap());
+        
+        let archive = content.iter().find(|c| c.content_name == "archive1.zip").unwrap();
+        assert_eq!(archive.content_type, "zip");
+        assert_eq!(archive.content_url, archive_path.to_str().unwrap());
+    }
+
+    #[actix_web::test]
+    async fn test_image_content_search_no_results() {
+        let (temp_dir, app) = setup_test_app().await;
+        
+        // Create a mock scripts directory
+        let mock_dir = temp_dir.path().join("mock_bin");
+        fs::create_dir_all(&mock_dir).unwrap();
+        
+        // Create a mock script for mdfind that returns no results
+        let mock_mdfind = mock_dir.join("mdfind");
+        fs::write(&mock_mdfind, "#!/bin/bash\necho \"\"\n").unwrap();
+        fs::set_permissions(&mock_mdfind, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Create a mock script for mdls that won't be used
+        let mock_mdls = mock_dir.join("mdls");
+        fs::write(&mock_mdls, "#!/bin/bash\necho \"\"\n").unwrap();
+        fs::set_permissions(&mock_mdls, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Add the mock scripts directory to PATH
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let path_var = format!("{}:{}", mock_dir.display(), old_path);
+        std::env::set_var("PATH", &path_var);
+
+        let req = test::TestRequest::get()
+            .uri("/image-content?image_name=nonexistent.jpg")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        
+        let body = test::read_body(resp).await;
+        let content: Vec<ContentInfo> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(content.len(), 0);
+    }
+
+    #[actix_web::test]
+    async fn test_image_content_search_invalid_request() {
+        let (temp_dir, app) = setup_test_app().await;
+
+        // Test with missing image name
+        let req = test::TestRequest::get()
+            .uri("/image-content")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
