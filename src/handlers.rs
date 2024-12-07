@@ -7,6 +7,7 @@
  * - Image listing and pagination
  * - Image serving with caching
  * - Image metadata retrieval
+ * - Image content search
  */
 
 use actix_web::{get, web, HttpResponse, Responder, HttpRequest};
@@ -18,6 +19,7 @@ use tokio::fs;
 use futures_util::stream::StreamExt;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use serde_json;
 
 /// Response structure for health check endpoint
 #[derive(Debug, Serialize, Deserialize)]
@@ -276,6 +278,46 @@ pub async fn image_info(
     }
 }
 
+/// Image content search handler
+/// 
+/// This endpoint searches for content (movies, archives, folders) related to an image name
+/// using the macOS Finder API.
+#[get("/image-content/{image_name}")]
+pub async fn search_image_content(
+    image_name: web::Path<String>,
+) -> actix_web::Result<impl Responder> {
+    log::debug!("Received request for image content search with image_name: {}", image_name);
+    log::debug!("Calling search_content");
+    let content = crate::finder::search_content(&image_name);
+    log::debug!("Search complete, found {} content items", content.len());
+    log::debug!("Content items: {:?}", content);
+    log::debug!("About to construct HttpResponse");
+    
+    // Try serializing the content first to debug
+    if let Ok(json_str) = serde_json::to_string(&content) {
+        log::debug!("Successfully serialized content to JSON, length: {}", json_str.len());
+        if json_str.len() > 1000 {
+            log::debug!("First 1000 chars of JSON: {}", &json_str[..1000]);
+        } else {
+            log::debug!("Full JSON: {}", json_str);
+        }
+    } else {
+        log::error!("Failed to serialize content to JSON");
+    }
+    
+    let response = HttpResponse::Ok().json(content);
+    log::debug!("Response constructed successfully");
+    log::debug!("About to return response");
+    
+    Ok(response)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageContentQuery {
+    /// Image name to search for related content
+    pub image_name: Option<String>,
+}
+
 /// Query parameters for image listing endpoint
 #[derive(Debug, Deserialize)]
 pub struct ListImagesQuery {
@@ -355,6 +397,7 @@ mod tests {
                 .service(serve_image)
                 .service(image_info)
                 .service(list_images)
+                .service(search_image_content)
         ).await;
 
         (temp_dir, app)

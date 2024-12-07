@@ -15,6 +15,7 @@
 
 use actix_web::{web, App, HttpServer};
 use env_logger;
+use log;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use images_api::image_processor::ImageProcessor;
@@ -34,7 +35,8 @@ fn init_app(
     cfg.service(handlers::health_check)
        .service(handlers::list_images)
        .service(handlers::serve_image)
-       .service(handlers::image_info);
+       .service(handlers::image_info)
+       .service(handlers::search_image_content);
 }
 
 /// Application entry point
@@ -45,7 +47,10 @@ fn init_app(
 /// - Web server with configured routes
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+        .init();
+
+    log::debug!("Starting Images API service");
 
     let images_dir = std::env::var("IMAGES_DIR")
         .unwrap_or_else(|_| "./images".to_string());

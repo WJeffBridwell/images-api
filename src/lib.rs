@@ -1,5 +1,6 @@
 pub mod handlers;
 pub mod image_processor;
+pub mod finder;
 
 #[cfg(test)]
 mod tests {

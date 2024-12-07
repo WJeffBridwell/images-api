@@ -190,6 +190,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /image-content:
+    get:
+      summary: Search for content related to an image
+      description: |
+        Searches for movies, archives, and folders related to the given image name
+        using the macOS Finder API.
+      parameters:
+        - name: image_name
+          in: query
+          description: Name of the image to search related content for
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of content items found
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ContentInfo'
+        '400':
+          description: Bad request (missing image_name parameter)
+        '500':
+          description: Internal server error
+
 components:
   schemas:
     HealthResponse:
@@ -265,6 +292,44 @@ components:
           description: Error code
       required:
         - error
+
+    ContentInfo:
+      type: object
+      properties:
+        content_name:
+          type: string
+          description: Name of the content item
+        content_type:
+          type: string
+          description: Type of content (movie, archive, folder)
+        content_url:
+          type: string
+          description: URL or path to the content
+        content_tags:
+          type: array
+          items:
+            type: string
+          description: Tags associated with the content
+        content_created:
+          type: integer
+          format: int64
+          description: Unix timestamp when the content was created
+        content_viewed:
+          type: integer
+          format: int64
+          description: Unix timestamp when the content was last viewed
+        content_size:
+          type: integer
+          format: int64
+          description: Size of the content in bytes
+      required:
+        - content_name
+        - content_type
+        - content_url
+        - content_tags
+        - content_created
+        - content_viewed
+        - content_size
 
 tags:
   - name: System
