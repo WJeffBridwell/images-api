@@ -13,31 +13,17 @@
  * - Health checks
  */
 
-use actix_web::{web, App, HttpServer};
-use env_logger;
+use actix_web::{middleware::Logger, web, App, HttpServer};
+use actix_cors::Cors;
+use actix_files as fs;
+use env_logger::Env;
 use log;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use images_api::image_processor::ImageProcessor;
 use images_api::handlers;
+use images_api::image_processor::ImageProcessor;
 
 type ImageCache = HashMap<String, Vec<u8>>;
-
-/// Configures and initializes the web application
-/// 
-/// Sets up:
-/// - Route handlers
-/// - Shared state (ImageProcessor)
-/// - CORS and logging middleware
-fn init_app(
-    cfg: &mut web::ServiceConfig
-) {
-    cfg.service(handlers::health_check)
-       .service(handlers::list_images)
-       .service(handlers::serve_image)
-       .service(handlers::image_info)
-       .service(handlers::search_image_content);
-}
 
 /// Application entry point
 /// 
@@ -47,16 +33,13 @@ fn init_app(
 /// - Web server with configured routes
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
-        .init();
+    env_logger::init_from_env(Env::default().default_filter_or("debug"));
 
     log::debug!("Starting Images API service");
 
-    let images_dir = std::env::var("IMAGES_DIR")
-        .unwrap_or_else(|_| "./images".to_string());
-    let images_dir = std::path::PathBuf::from(images_dir);
-
     // Create images directory if it doesn't exist
+    let images_dir = std::env::var("IMAGES_DIR").unwrap_or_else(|_| "./images".to_string());
+    let images_dir = std::path::PathBuf::from(images_dir);
     if !images_dir.exists() {
         std::fs::create_dir_all(&images_dir)?;
     }
@@ -66,13 +49,21 @@ async fn main() -> std::io::Result<()> {
     let images_dir = web::Data::new(images_dir);
 
     HttpServer::new(move || {
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header();
+
         App::new()
             .app_data(processor.clone())
             .app_data(image_cache.clone())
             .app_data(images_dir.clone())
-            .configure(init_app)
+            .wrap(Logger::default())
+            .wrap(cors)
+            .service(fs::Files::new("/static", "static").show_files_listing())
+            .configure(handlers::init_routes)
     })
-    .bind("127.0.0.1:8081")?
+    .bind(("127.0.0.1", 8081))?
     .run()
     .await
 }
@@ -84,8 +75,8 @@ mod tests {
 
     #[actix_web::test]
     async fn test_app_configuration() {
-        let processor = web::Data::new(ImageProcessor::new());
-        let image_cache = web::Data::new(Arc::new(RwLock::new(ImageCache::new())));
+        let processor = web::Data::new(images_api::image_processor::ImageProcessor::new());
+        let image_cache = web::Data::new(std::sync::Arc::new(std::sync::RwLock::new(images_api::ImageCache::new())));
         let images_dir = web::Data::new(std::path::PathBuf::from("./test_images"));
 
         let app = App::new()

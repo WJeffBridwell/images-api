@@ -10,16 +10,21 @@
  * - Image content search
  */
 
-use actix_web::{get, web, HttpResponse, Responder, HttpRequest};
+use actix_web::{get, post, web, HttpResponse, Responder, HttpRequest};
+use actix_files::NamedFile;
 use chrono::Utc;
 use log::error;
 use serde::{Serialize, Deserialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::fs;
-use futures_util::stream::StreamExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use futures::StreamExt;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde_json;
+use serde_json::{self, json};
+use std::process::Command;
+use actix_web::http::header::{ContentDisposition, DispositionType};
+use mime_guess::from_path;
 
 /// Response structure for health check endpoint
 #[derive(Debug, Serialize, Deserialize)]
@@ -312,6 +317,167 @@ pub async fn search_image_content(
     Ok(response)
 }
 
+#[post("/open-in-preview")]
+pub async fn open_in_preview(form: web::Form<OpenInPreviewRequest>, images_dir: web::Data<std::path::PathBuf>) -> impl Responder {
+    let filepath = &form.filepath;
+    
+    // Check if the file exists
+    let path = std::path::Path::new(filepath);
+    if !path.exists() {
+        error!("File not found: {}", filepath);
+        return HttpResponse::NotFound().json(json!({
+            "status": "error",
+            "message": format!("File not found: {}", filepath)
+        }));
+    }
+    
+    // Log file details
+    log::debug!("Opening file in Preview: {}", filepath);
+    log::debug!("File exists: {}", path.exists());
+    log::debug!("File is absolute: {}", path.is_absolute());
+    if let Ok(metadata) = std::fs::metadata(path) {
+        log::debug!("File size: {} bytes", metadata.len());
+        log::debug!("File permissions: {:?}", metadata.permissions());
+    }
+    
+    // Construct the command
+    let preview_cmd = Command::new("open")
+        .args(["-a", "Preview", filepath])
+        .output();
+    
+    // Log command details
+    log::debug!("Preview command: open -a Preview {}", filepath);
+    
+    match preview_cmd {
+        Ok(output) => {
+            log::debug!("Command status: {:?}", output.status);
+            log::debug!("Command stdout: {}", String::from_utf8_lossy(&output.stdout));
+            log::debug!("Command stderr: {}", String::from_utf8_lossy(&output.stderr));
+            
+            if output.status.success() {
+                log::debug!("Successfully opened file in Preview");
+                HttpResponse::Ok().json(json!({ "status": "success" }))
+            } else {
+                let error_msg = String::from_utf8_lossy(&output.stderr);
+                error!("Preview command failed: {}", error_msg);
+                HttpResponse::InternalServerError().json(json!({
+                    "status": "error",
+                    "message": format!("Preview command failed: {}", error_msg)
+                }))
+            }
+        },
+        Err(e) => {
+            error!("Failed to execute Preview command: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "status": "error",
+                "message": format!("Failed to execute Preview command: {}", e)
+            }))
+        }
+    }
+}
+
+#[get("/view/{name}")]
+pub async fn view_content(req: HttpRequest, name: web::Path<String>) -> impl Responder {
+    let path = format!("static/{}", name);
+    match NamedFile::open(path) {
+        Ok(file) => file.into_response(&req),
+        Err(_) => HttpResponse::NotFound().body("File not found"),
+    }
+}
+
+#[get("/videos/haley-reed/{filename}")]
+pub async fn serve_video(req: HttpRequest, filename: web::Path<String>) -> Result<HttpResponse, actix_web::Error> {
+    let video_path = PathBuf::from("/Volumes/VideosHaley-Hime/haley-reed").join(filename.as_ref());
+    
+    if !video_path.exists() {
+        return Err(actix_web::error::ErrorNotFound("Video not found"));
+    }
+
+    let file = tokio::fs::File::open(&video_path).await?;
+    let metadata = file.metadata().await?;
+    let file_size = metadata.len();
+
+    let content_type = from_path(&video_path)
+        .first_or_octet_stream()
+        .to_string();
+
+    // Handle range request
+    if let Some(range) = req.headers().get("range") {
+        let range_str = range.to_str().map_err(|_| actix_web::error::ErrorBadRequest("Invalid range header"))?;
+        let (start, end) = parse_range(range_str, file_size)?;
+        let length = end - start + 1;
+
+        // Seek to the start position
+        use tokio::io::AsyncSeekExt;
+        let mut file = file;
+        file.seek(std::io::SeekFrom::Start(start)).await?;
+
+        // Create a chunked stream for the range
+        let stream = FramedRead::new(tokio::io::AsyncReadExt::take(file, length), BytesCodec::new())
+            .map(|result| {
+                result.map(|bytes| bytes.freeze())
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            });
+
+        Ok(HttpResponse::PartialContent()
+            .insert_header(("Content-Range", format!("bytes {}-{}/{}", start, end, file_size)))
+            .insert_header(("Accept-Ranges", "bytes"))
+            .insert_header(("Content-Length", length.to_string()))
+            .insert_header(("Content-Type", content_type))
+            .streaming(stream))
+    } else {
+        // No range requested - serve entire file in chunks
+        let stream = FramedRead::new(file, BytesCodec::new())
+            .map(|result| {
+                result.map(|bytes| bytes.freeze())
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            });
+
+        Ok(HttpResponse::Ok()
+            .insert_header(("Accept-Ranges", "bytes"))
+            .insert_header(("Content-Length", file_size.to_string()))
+            .insert_header(("Content-Type", content_type))
+            .streaming(stream))
+    }
+}
+
+fn parse_range(range: &str, file_size: u64) -> Result<(u64, u64), actix_web::Error> {
+    let range = range.strip_prefix("bytes=").ok_or_else(|| {
+        actix_web::error::ErrorBadRequest("Invalid range header format")
+    })?;
+
+    let (start_str, end_str) = range.split_once('-').ok_or_else(|| {
+        actix_web::error::ErrorBadRequest("Invalid range header format")
+    })?;
+
+    let start: u64 = if start_str.is_empty() {
+        0
+    } else {
+        start_str.parse().map_err(|_| {
+            actix_web::error::ErrorBadRequest("Invalid range start")
+        })?
+    };
+
+    let end: u64 = if end_str.is_empty() {
+        file_size - 1
+    } else {
+        end_str.parse().map_err(|_| {
+            actix_web::error::ErrorBadRequest("Invalid range end")
+        })?
+    };
+
+    if start > end || end >= file_size {
+        return Err(actix_web::error::ErrorBadRequest("Invalid range"));
+    }
+
+    Ok((start, end))
+}
+
+#[derive(Deserialize)]
+pub struct OpenInPreviewRequest {
+    filepath: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ImageContentQuery {
     /// Image name to search for related content
@@ -340,6 +506,25 @@ fn is_image_file(path: &Path) -> bool {
         .map(|e| e.to_lowercase());
     
     matches!(extension.as_deref(), Some("jpg") | Some("jpeg") | Some("png") | Some("gif"))
+}
+
+/// Initialize all routes for the application
+pub fn init_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(health_check)
+        .service(list_images)
+        .service(serve_image)
+        .service(image_info)
+        .service(search_image_content)
+        .service(open_in_preview)
+        .service(view_content)
+        .service(serve_video)
+        .service(
+            actix_files::Files::new("/static", "static")
+                .show_files_listing()
+                .use_last_modified(true)
+                .prefer_utf8(true)
+                .use_etag(true)
+        );
 }
 
 #[cfg(test)]
@@ -393,11 +578,7 @@ mod tests {
                 .app_data(processor)
                 .app_data(image_cache)
                 .app_data(images_dir_data)
-                .service(health_check)
-                .service(serve_image)
-                .service(image_info)
-                .service(list_images)
-                .service(search_image_content)
+                .configure(init_routes)
         ).await;
 
         (temp_dir, app)
