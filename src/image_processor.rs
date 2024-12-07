@@ -15,6 +15,8 @@ use std::path::Path;
 use image::{ImageFormat, GenericImageView};
 use tokio::fs;
 use anyhow::{Result, Context};
+use serde::{Serialize, Deserialize};
+use log;
 
 /// Image processing error types
 #[derive(Debug)]
@@ -25,18 +27,87 @@ pub enum ImageError {
     ImageError(image::ImageError),
     /// Invalid input parameters
     ValidationError(String),
+    /// Other errors
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for ImageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImageError::IoError(e) => write!(f, "IO error: {}", e),
+            ImageError::ImageError(e) => write!(f, "Image error: {}", e),
+            ImageError::ValidationError(e) => write!(f, "Validation error: {}", e),
+            ImageError::Other(e) => write!(f, "Other error: {}", e),
+        }
+    }
+}
+
+impl From<anyhow::Error> for ImageError {
+    fn from(err: anyhow::Error) -> Self {
+        ImageError::Other(err)
+    }
+}
+
+impl From<std::io::Error> for ImageError {
+    fn from(err: std::io::Error) -> Self {
+        ImageError::IoError(err)
+    }
+}
+
+impl From<image::ImageError> for ImageError {
+    fn from(err: image::ImageError) -> Self {
+        ImageError::ImageError(err)
+    }
+}
+
+/// Custom serialization for ImageFormat
+mod image_format_serde {
+    use super::*;
+    use serde::{Serializer, Deserializer};
+
+    pub fn serialize<S>(format: &ImageFormat, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let format_str = match format {
+            ImageFormat::Png => "PNG",
+            ImageFormat::Jpeg => "JPEG",
+            ImageFormat::Gif => "GIF",
+            ImageFormat::WebP => "WEBP",
+            ImageFormat::Tiff => "TIFF",
+            _ => "UNKNOWN",
+        };
+        serializer.serialize_str(format_str)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<ImageFormat, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_uppercase().as_str() {
+            "PNG" => Ok(ImageFormat::Png),
+            "JPEG" | "JPG" => Ok(ImageFormat::Jpeg),
+            "GIF" => Ok(ImageFormat::Gif),
+            "WEBP" => Ok(ImageFormat::WebP),
+            "TIFF" => Ok(ImageFormat::Tiff),
+            _ => Ok(ImageFormat::Jpeg), // Default to JPEG if unknown
+        }
+    }
 }
 
 /// Image metadata structure
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImageData {
     /// Raw image bytes
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<u8>,
     /// Image dimensions (width, height)
     pub dimensions: (u32, u32),
     /// Size of image in bytes
     pub size_bytes: usize,
     /// Image format (jpg, png, etc.)
+    #[serde(with = "image_format_serde")]
     pub format: ImageFormat,
 }
 
@@ -59,21 +130,25 @@ impl ImageProcessor {
         path: &Path,
         include_data: bool,
     ) -> Result<ImageData, ImageError> {
+        log::info!("Reading image file: {}", path.display());
         let content = fs::read(path)
             .await
             .with_context(|| format!("Failed to read image file: {}", path.display()))?;
 
+        log::info!("Loading image into memory: {}", path.display());
         let img = image::load_from_memory(&content)
             .with_context(|| "Failed to load image from memory")?;
 
-        let format = ImageFormat::from_path(path)
+        log::info!("Guessing image format: {}", path.display());
+        let format = image::guess_format(&content)
             .with_context(|| "Failed to determine image format")?;
 
+        log::info!("Successfully processed image: {}, format: {:?}", path.display(), format);
         Ok(ImageData {
             dimensions: img.dimensions(),
-            format,
             size_bytes: content.len(),
-            content,
+            format,
+            content: if include_data { content } else { Vec::new() },
         })
     }
 
@@ -88,6 +163,7 @@ impl ImageProcessor {
         path: &Path,
         width: u32,
         height: u32,
+        _include_data: bool,
     ) -> Result<Vec<u8>, ImageError> {
         let content = fs::read(path)
             .await
@@ -98,7 +174,7 @@ impl ImageProcessor {
 
         let resized = img.resize(width, height, image::imageops::FilterType::Lanczos3);
         
-        let format = ImageFormat::from_path(path)
+        let format = image::guess_format(&content)
             .with_context(|| "Failed to determine image format")?;
 
         let mut buffer = Vec::new();
@@ -125,17 +201,19 @@ impl ImageProcessor {
         let img = image::load_from_memory(&content)
             .with_context(|| "Failed to load image from memory")?;
 
-        // Normalize degrees to be in [0, 360)
-        let normalized_degrees = ((angle % 360) + 360) % 360;
+        match angle {
+            90 | 180 | 270 => (),
+            _ => return Err(anyhow::anyhow!("Only 90-degree rotations are supported").into()),
+        }
         
-        let rotated = match normalized_degrees {
+        let rotated = match angle {
             90 => img.rotate90(),
             180 => img.rotate180(),
             270 => img.rotate270(),
-            _ => return Err(anyhow::anyhow!("Only 90-degree rotations are supported")),
+            _ => unreachable!(),
         };
 
-        let format = ImageFormat::from_path(path)
+        let format = image::guess_format(&content)
             .with_context(|| "Failed to determine image format")?;
 
         let mut buffer = Vec::new();
@@ -177,7 +255,7 @@ mod tests {
         assert_eq!(data.dimensions, (2, 2));
         assert_eq!(data.format, ImageFormat::Jpeg);
         assert!(data.size_bytes > 0);
-        assert!(!data.content.is_empty());
+        assert!(data.content.is_empty());
     }
 
     #[tokio::test]
@@ -189,7 +267,7 @@ mod tests {
         std::fs::write(&test_path, &test_image).unwrap();
 
         let processor = ImageProcessor::new();
-        let result = processor.resize_image(&test_path, 4, 4).await;
+        let result = processor.resize_image(&test_path, 4, 4, false).await;
         
         assert!(result.is_ok());
         let resized_data = result.unwrap();

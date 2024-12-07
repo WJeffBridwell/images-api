@@ -73,20 +73,30 @@ pub async fn health_check() -> impl Responder {
 /// 
 /// Query parameters:
 /// - page: Page number (default: 1)
-/// - per_page: Items per page (default: 10)
+/// - limit: Items per page (default: 10)
 /// - sort_by: Field to sort by (default: none)
 /// - order: Sort order (default: asc)
+/// - include_data: Whether to include image data in response (default: false)
 #[get("/images")]
 pub async fn list_images(
     query: web::Query<ListImagesQuery>,
     images_dir: web::Data<std::path::PathBuf>,
     processor: web::Data<crate::image_processor::ImageProcessor>,
 ) -> impl Responder {
-    let page = query.page.unwrap_or(1);
-    let per_page = query.per_page.unwrap_or(10);
-
-    let mut images = Vec::new();
+    log::info!("Starting list_images request with limit={}, include_data={}", 
+        query.limit.unwrap_or(10),
+        query.include_data.unwrap_or(false)
+    );
     
+    let page = query.page.unwrap_or(1);
+    let limit = query.limit.unwrap_or(10);
+    let start = (page - 1) * limit;
+
+    let mut images = Vec::with_capacity(limit);
+    let mut count = 0;
+    let mut skipped = 0;
+    
+    log::info!("Reading directory: {}", images_dir.display());
     let mut read_dir = match fs::read_dir(images_dir.as_ref()).await {
         Ok(dir) => dir,
         Err(e) => {
@@ -96,17 +106,26 @@ pub async fn list_images(
     };
 
     loop {
+        if count >= limit {
+            log::info!("Reached limit of {}", limit);
+            break;
+        }
+
         match read_dir.next_entry().await {
             Ok(Some(entry)) => {
                 let path = entry.path();
+                log::info!("Processing file: {}", path.display());
                 if is_image_file(&path) {
-                    // Skip if we've already processed enough images
-                    if !images.is_empty() && images.len() >= per_page {
-                        break;
+                    if skipped < start {
+                        log::info!("Skipping image for pagination: {}", path.display());
+                        skipped += 1;
+                        continue;
                     }
 
-                    match processor.get_image_data(&path, false).await {
+                    log::info!("Found image file: {}", path.display());
+                    match processor.get_image_data(&path, query.include_data.unwrap_or(false)).await {
                         Ok(data) => {
+                            log::info!("Successfully processed image: {}, size: {}", path.display(), data.size_bytes);
                             let metadata = ImageMetadata {
                                 filename: path.file_name()
                                     .and_then(|n| n.to_str())
@@ -116,18 +135,28 @@ pub async fn list_images(
                                 size_bytes: data.size_bytes as u64,
                                 last_modified: Utc::now(),
                                 format: Some(ImageFormat::from(data.format)),
-                                data: Some(STANDARD.encode(&data.content)),
+                                data: if query.include_data.unwrap_or(false) {
+                                    Some(STANDARD.encode(&data.content))
+                                } else {
+                                    None
+                                },
                             };
                             images.push(metadata);
+                            count += 1;
                         }
                         Err(e) => {
                             error!("Failed to get image data for {}: {}", path.display(), e);
                             continue;
                         }
                     }
+                } else {
+                    log::info!("Skipping non-image file: {}", path.display());
                 }
             }
-            Ok(None) => break,
+            Ok(None) => {
+                log::info!("No more files in directory");
+                break;
+            }
             Err(e) => {
                 error!("Failed to read directory entry: {}", e);
                 continue;
@@ -164,15 +193,7 @@ pub async fn list_images(
         }
     }
 
-    // Apply pagination
-    let start = (page - 1) * per_page;
-    let paginated_images: Vec<_> = images
-        .into_iter()
-        .skip(start)
-        .take(per_page)
-        .collect();
-
-    HttpResponse::Ok().json(paginated_images)
+    HttpResponse::Ok().json(images)
 }
 
 /// Image serving endpoint handler
@@ -261,11 +282,13 @@ pub struct ListImagesQuery {
     /// Page number (default: 1)
     pub page: Option<usize>,
     /// Items per page (default: 10)
-    pub per_page: Option<usize>,
+    pub limit: Option<usize>,
     /// Field to sort by (default: none)
     pub sort_by: Option<String>,
     /// Sort order (default: asc)
     pub order: Option<String>,
+    /// Whether to include image data in response (default: false)
+    pub include_data: Option<bool>,
 }
 
 /// Checks if a file is an image

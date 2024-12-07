@@ -15,11 +15,10 @@
 
 use actix_web::{web, App, HttpServer};
 use env_logger;
-use std::env;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use images_api::image_processor::ImageProcessor;
-use images_api::handlers::*;
+use images_api::handlers;
 
 type ImageCache = HashMap<String, Vec<u8>>;
 
