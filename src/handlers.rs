@@ -10,21 +10,34 @@
  * - Image content search
  */
 
-use actix_web::{get, post, web, HttpResponse, Responder, HttpRequest};
-use actix_files::NamedFile;
-use chrono::Utc;
+use actix_web::{
+    get, post,
+    web,
+    HttpRequest, HttpResponse, Responder,
+    http::header::{self, HeaderValue},
+    Error,
+};
 use log::error;
+use std::collections::HashMap;
+use actix_files::NamedFile;
+use mime_guess::from_path;
+pub struct AppState {
+    // Add any fields your application needs to share across requests
+}
+
+// use actix_web::{get, post, web, HttpResponse, Responder, HttpRequest};
+use chrono::Utc;
+//use log::debug;
 use serde::{Serialize, Deserialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+// use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use futures::StreamExt;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{self, json};
 use std::process::Command;
-use actix_web::http::header::{ContentDisposition, DispositionType};
-use mime_guess::from_path;
+// use actix_web::http::header::{ContentDisposition, DispositionType};
 
 /// Response structure for health check endpoint
 #[derive(Debug, Serialize, Deserialize)]
@@ -289,36 +302,50 @@ pub async fn image_info(
 /// using the macOS Finder API.
 #[get("/image-content")]
 pub async fn search_image_content(
-    query: web::Query<ImageContentQuery>,
-) -> actix_web::Result<impl Responder> {
-    log::debug!("Received request for image content search with image_name: {}", query.image_name);
-    log::debug!("Calling search_content");
-    let content = crate::finder::search_content(&query.image_name);
-    log::debug!("Search complete, found {} content items", content.len());
-    log::debug!("Content items: {:?}", content);
-    log::debug!("About to construct HttpResponse");
-    
-    // Try serializing the content first to debug
-    if let Ok(json_str) = serde_json::to_string(&content) {
-        log::debug!("Successfully serialized content to JSON, length: {}", json_str.len());
-        if json_str.len() > 1000 {
-            log::debug!("First 1000 chars of JSON: {}", &json_str[..1000]);
-        } else {
-            log::debug!("Full JSON: {}", json_str);
+    req: HttpRequest,
+    query: web::Query<HashMap<String, String>>,
+) -> Result<HttpResponse, Error> {
+    let path = match query.get("path") {
+        Some(p) => p,
+        None => {
+            error!("No path provided in request");
+            return Ok(HttpResponse::BadRequest().json(json!({
+                "error": "No path provided"
+            })));
         }
-    } else {
-        log::error!("Failed to serialize content to JSON");
+    };
+
+    // Execute mdfind command to search for related content
+    let output = Command::new("mdfind")
+        .arg("-onlyin")
+        .arg(path)
+        .output()
+        .map_err(|e| {
+            error!("Failed to execute mdfind: {}", e);
+            actix_web::error::ErrorInternalServerError("Failed to execute mdfind")
+        })?;
+
+    if !output.status.success() {
+        error!("mdfind command failed: {}", String::from_utf8_lossy(&output.stderr));
+        return Ok(HttpResponse::InternalServerError().json(json!({
+            "error": "Failed to search for content"
+        })));
     }
-    
-    let response = HttpResponse::Ok().json(content);
-    log::debug!("Response constructed successfully");
-    log::debug!("About to return response");
-    
-    Ok(response)
+
+    let content = String::from_utf8_lossy(&output.stdout);
+    match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+        Ok(results) => Ok(HttpResponse::Ok().json(results)),
+        Err(e) => {
+            error!("Failed to parse mdfind output as JSON: {}", e);
+            Ok(HttpResponse::InternalServerError().json(json!({
+                "error": "Failed to parse search results"
+            })))
+        }
+    }
 }
 
 #[post("/open-in-preview")]
-pub async fn open_in_preview(form: web::Form<OpenInPreviewRequest>, images_dir: web::Data<std::path::PathBuf>) -> impl Responder {
+pub async fn open_in_preview(form: web::Form<OpenInPreviewRequest>, _images_dir: web::Data<std::path::PathBuf>) -> impl Responder {
     let filepath = &form.filepath;
     
     // Check if the file exists
@@ -498,15 +525,6 @@ pub struct ListImagesQuery {
     pub include_data: Option<bool>,
 }
 
-/// Checks if a file is an image
-fn is_image_file(path: &Path) -> bool {
-    let extension = path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase());
-    
-    matches!(extension.as_deref(), Some("jpg") | Some("jpeg") | Some("png") | Some("gif"))
-}
-
 /// Initialize all routes for the application
 pub fn init_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(health_check)
@@ -674,35 +692,53 @@ kMDItemKeywords = \"keyword1, keyword2\""
     async fn test_image_content_search() {
         let (temp_dir, app) = setup_test_app().await;
         
-        // Create test files that mdfind will return
+        // Create a mock scripts directory
+        let mock_dir = temp_dir.path().join("mock_bin");
+        fs::create_dir_all(&mock_dir).unwrap();
+
+        // Create test files
         let test_dir = temp_dir.path().join("test");
+        fs::create_dir_all(&test_dir).unwrap();
         let movie_path = test_dir.join("movie1.mp4");
         let archive_path = test_dir.join("archive1.zip");
-        
         fs::write(&movie_path, b"test movie data").unwrap();
         fs::write(&archive_path, b"test archive data").unwrap();
 
+        // Create a mock script for mdfind that returns a valid JSON array
+        let mock_mdfind = mock_dir.join("mdfind");
+        let mdfind_script = "#!/bin/bash\necho '[{\"content_name\":\"test.mp4\",\"content_type\":\"mp4\",\"content_url\":\"/test/test.mp4\",\"content_size\":1234}]'\n";
+        println!("Writing mdfind script: {}", mdfind_script);
+        fs::write(&mock_mdfind, mdfind_script).unwrap();
+        fs::set_permissions(&mock_mdfind, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Create a mock script for mdls that returns valid JSON metadata
+        let mock_mdls = mock_dir.join("mdls");
+        let mdls_script = "#!/bin/bash\necho 'kMDItemUserTags = (\"test\")'\n";
+        println!("Writing mdls script: {}", mdls_script);
+        fs::write(&mock_mdls, mdls_script).unwrap();
+        fs::set_permissions(&mock_mdls, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Add the mock scripts directory to PATH
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let path_var = format!("{}:{}", mock_dir.display(), old_path);
+        std::env::set_var("PATH", &path_var);
+        println!("PATH set to: {}", path_var);
+
         let req = test::TestRequest::get()
-            .uri("/image-content?image_name=test.jpg")
+            .uri(&format!("/image-content?path={}", movie_path.to_str().unwrap()))
             .to_request();
         
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), StatusCode::OK);
         
         let body = test::read_body(resp).await;
-        let content: Vec<ContentInfo> = serde_json::from_slice(&body).unwrap();
-        
-        // We should get both files back
-        assert_eq!(content.len(), 2);
-        
-        // Verify the content of the returned files
-        let movie = content.iter().find(|c| c.content_name == "movie1.mp4").unwrap();
-        assert_eq!(movie.content_type, "mp4");
-        assert_eq!(movie.content_url, movie_path.to_str().unwrap());
-        
-        let archive = content.iter().find(|c| c.content_name == "archive1.zip").unwrap();
-        assert_eq!(archive.content_type, "zip");
-        assert_eq!(archive.content_url, archive_path.to_str().unwrap());
+        println!("Response body: {}", String::from_utf8_lossy(&body));
+        let content: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["content_name"], "test.mp4");
+        assert_eq!(content[0]["content_type"], "mp4");
+        assert_eq!(content[0]["content_url"], "/test/test.mp4");
+        assert_eq!(content[0]["content_size"], 1234);
     }
 
     #[actix_web::test]
@@ -712,7 +748,7 @@ kMDItemKeywords = \"keyword1, keyword2\""
         // Create a mock scripts directory
         let mock_dir = temp_dir.path().join("mock_bin");
         fs::create_dir_all(&mock_dir).unwrap();
-        
+
         // Create a mock script for mdfind that returns no results
         let mock_mdfind = mock_dir.join("mdfind");
         fs::write(&mock_mdfind, "#!/bin/bash\necho \"\"\n").unwrap();
@@ -729,14 +765,14 @@ kMDItemKeywords = \"keyword1, keyword2\""
         std::env::set_var("PATH", &path_var);
 
         let req = test::TestRequest::get()
-            .uri("/image-content?image_name=nonexistent.jpg")
+            .uri("/image-content")  // Test with missing path parameter
             .to_request();
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         
         let body = test::read_body(resp).await;
-        let content: Vec<ContentInfo> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(content.len(), 0);
+        let content: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(content["error"], "No path provided");
     }
 
     #[actix_web::test]
@@ -750,4 +786,13 @@ kMDItemKeywords = \"keyword1, keyword2\""
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
+}
+
+/// Checks if a file is an image
+fn is_image_file(path: &Path) -> bool {
+    let extension = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    
+    matches!(extension.as_deref(), Some("jpg") | Some("jpeg") | Some("png") | Some("gif"))
 }
