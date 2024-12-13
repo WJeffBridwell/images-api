@@ -30,3 +30,6 @@ logs/
 
 # Backup files
 *.old
+
+# Build output
+src/error
