@@ -17,24 +17,13 @@ pub struct ContentInfo {
 pub fn search_content(image_name: &str) -> Vec<ContentInfo> {
     debug!("Starting search_content for image_name: {}", image_name);
     
-    // Get everything before the last dot as the search prefix
-    let search_prefix = image_name
-        .rsplit('.')
-        .nth(1)
-        .unwrap_or(image_name);
-    
-    debug!("Search prefix: {}", search_prefix);
-
-    let query = format!(
-        "(kMDItemDisplayName == '{}*'c || kMDItemFinderComment == '{}*'c || kMDItemKeywords == '{}*'c || kMDItemUserTags == '{}*'c) && \
-         (kMDItemContentTypeTree == 'public.content')",
-        search_prefix, search_prefix, search_prefix, search_prefix
-    );
-
-    debug!("Running mdfind with query: {}", query);
+    // Strip extension from image name for search
+    let base_name = image_name.split('.').next().unwrap_or(image_name);
+    let args = vec!["-name", base_name];
+    debug!("Running mdfind command: mdfind {}", args.join(" "));
 
     let output = Command::new("mdfind")
-        .arg(&query)
+        .args(&args)
         .output()
         .expect("Failed to execute mdfind command");
 
@@ -101,7 +90,7 @@ pub fn search_content(image_name: &str) -> Vec<ContentInfo> {
         let raw_results = String::from_utf8_lossy(&output.stdout).to_string();
         debug!("Full mdls output for {}: {}", path_str, raw_results);
 
-        // Extract tags from multiline format
+        // Extract only user-assigned tags
         let mut tags: Vec<String> = Vec::new();
         let mut in_user_tags = false;
         let mut in_tags_block = false;
@@ -141,24 +130,7 @@ pub fn search_content(image_name: &str) -> Vec<ContentInfo> {
             }
         }
 
-        // If no UserTags found, try other metadata fields
-        if tags.is_empty() {
-            debug!("No UserTags found, trying FinderComment and Keywords");
-            for keyword in ["kMDItemFinderComment", "kMDItemKeywords"] {
-                if let Some(line) = raw_results.lines().find(|line| line.contains(keyword)) {
-                    debug!("Found {} line: {}", keyword, line);
-                    if let Some(value) = line.split('=').nth(1) {
-                        let tag = value.trim().trim_matches('"').to_string();
-                        if !tag.is_empty() {
-                            debug!("Adding tag from {}: '{}'", keyword, tag);
-                            tags.push(tag);
-                        }
-                    }
-                }
-            }
-        }
-
-        debug!("Final tags for {}: {:?}", file_name, tags);
+        debug!("Final user tags for {}: {:?}", file_name, tags);
 
         debug!("Creating ContentInfo for path: {}", path_str);
         debug!("File metadata - size: {}, created: {:?}, accessed: {:?}", 

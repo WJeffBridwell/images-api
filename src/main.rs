@@ -34,7 +34,7 @@ pub type ImageCache = HashMap<String, Vec<u8>>;
 /// - Web server with configured routes
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::init_from_env(Env::default().default_filter_or("debug"));
+    env_logger::init_from_env(Env::default().default_filter_or("info"));
 
     log::debug!("Starting Images API service");
 
