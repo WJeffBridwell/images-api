@@ -574,7 +574,11 @@ mod tests {
         let mock_mdfind = mock_dir.join("mdfind");
         fs::write(&mock_mdfind, format!(r#"#!/bin/bash
 echo "Mock mdfind executing with query: $@" >&2
-# Always return our test files regardless of the query
+if [[ "$*" == *"THIS_FILE_DEFINITELY_DOES_NOT_EXIST_12345"* ]]; then
+    # Return nothing for our special test case
+    exit 0
+fi
+# Return our test files for other queries
 echo "{}/movie1.mp4
 {}/archive1.zip"
 "#, test_dir.display(), test_dir.display())).unwrap();
@@ -731,7 +735,7 @@ kMDItemKeywords = \"keyword1, keyword2\""
         let (temp_dir, app) = setup_test_app().await;
         
         let req = test::TestRequest::get()
-            .uri("/image-content?image_name=nonexistent.jpg")
+            .uri("/image-content?image_name=THIS_FILE_DEFINITELY_DOES_NOT_EXIST_12345.jpg")
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), StatusCode::OK);

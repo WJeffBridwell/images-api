@@ -19,3 +19,14 @@ Cargo.lock
 *.tfstate.*
 .terraform/
 terraform.tfvars
+
+# Logs
+logs/
+*.log
+
+# Runtime files
+*.pid
+*.out
+
+# Backup files
+*.old
