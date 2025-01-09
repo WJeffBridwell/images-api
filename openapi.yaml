@@ -8,7 +8,7 @@ info:
   contact:
     name: Jeff Bridwell
 servers:
-  - url: http://localhost:8081
+  - url: http://192.168.86.242:8081
     description: Local development server
 
 paths:
@@ -26,204 +26,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
-        '500':
-          description: Service is unhealthy
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /images:
-    get:
-      summary: List available images
-      description: Returns a paginated list of available images with metadata
-      operationId: listImages
-      tags:
-        - Images
-      parameters:
-        - name: page
-          in: query
-          description: Page number for pagination
-          required: false
-          schema:
-            type: integer
-            default: 1
-            minimum: 1
-        - name: per_page
-          in: query
-          description: Number of items per page
-          required: false
-          schema:
-            type: integer
-            default: 10
-            minimum: 1
-            maximum: 100
-        - name: sort_by
-          in: query
-          description: Field to sort by
-          required: false
-          schema:
-            type: string
-            enum: [filename, size, last_modified]
-        - name: order
-          in: query
-          description: Sort order
-          required: false
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: asc
-      responses:
-        '200':
-          description: Successfully retrieved image list
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ImageList'
-        '400':
-          description: Invalid query parameters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /images/{filename}:
-    get:
-      summary: Serve image file
-      description: Returns the requested image file, optionally processed according to query parameters
-      operationId: serveImage
-      tags:
-        - Images
-      parameters:
-        - name: filename
-          in: path
-          description: Name of the image file
-          required: true
-          schema:
-            type: string
-        - name: width
-          in: query
-          description: Desired width for resizing
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-        - name: height
-          in: query
-          description: Desired height for resizing
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-        - name: rotate
-          in: query
-          description: Rotation angle in degrees
-          required: false
-          schema:
-            type: number
-            minimum: 0
-            maximum: 360
-      responses:
-        '200':
-          description: Successfully retrieved image
-          content:
-            image/*:
-              schema:
-                type: string
-                format: binary
-        '404':
-          description: Image not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '400':
-          description: Invalid parameters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /images/{filename}/info:
-    get:
-      summary: Get image metadata
-      description: Returns metadata about the specified image
-      operationId: getImageInfo
-      tags:
-        - Images
-      parameters:
-        - name: filename
-          in: path
-          description: Name of the image file
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Successfully retrieved image metadata
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ImageMetadata'
-        '404':
-          description: Image not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   /image-content:
     get:
       summary: Search for content related to an image
       description: |
-        Searches for movies, archives, and folders related to the given image name
-        using the macOS Finder API. This endpoint allows you to find content that
-        might be related to an image based on its name, tags, or metadata.
+        Searches for movies, archives, and folders related to the given image name.
+        Results are paginated and include metadata about the files found.
       operationId: searchImageContent
       tags:
         - Content
       parameters:
         - name: image_name
           in: query
-          description: Name of the image to search related content for
+          description: Name of the image to search for
           required: true
           schema:
             type: string
+        - name: page
+          in: query
+          description: Page number (1-based)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          description: Number of items per page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
       responses:
         '200':
-          description: Successfully retrieved related content
+          description: Successfully retrieved content
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ContentInfo'
+                $ref: '#/components/schemas/PaginatedContentResponse'
         '400':
-          description: Missing or invalid image name
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
+          description: Bad request - missing or invalid parameters
           content:
             application/json:
               schema:
@@ -236,62 +81,99 @@ components:
       properties:
         status:
           type: string
+          description: Current health status of the service
           example: "healthy"
+        commit:
+          type: string
+          description: Current git commit hash
+          example: "a1b2c3d4"
         timestamp:
           type: string
           format: date-time
+          description: Current server timestamp
+          example: "2025-01-09T11:53:13-05:00"
       required:
         - status
+        - commit
         - timestamp
 
-    ImageList:
+    ContentInfo:
       type: object
       properties:
-        images:
+        content_name:
+          type: string
+          description: Name of the content file
+          example: "example.mp4"
+        content_type:
+          type: string
+          description: Type/extension of the content
+          example: "mp4"
+        content_url:
+          type: string
+          description: Full path to the content
+          example: "/path/to/content/example.mp4"
+        content_tags:
           type: array
+          description: User-assigned tags for the content
           items:
-            $ref: '#/components/schemas/ImageMetadata'
+            type: string
+          example: ["tag1", "tag2"]
+        content_created:
+          type: integer
+          format: int64
+          description: Unix timestamp of content creation time
+          nullable: true
+          example: 1641740400
+        content_viewed:
+          type: integer
+          format: int64
+          description: Unix timestamp of last viewed time
+          nullable: true
+          example: 1641740400
+        content_size:
+          type: integer
+          format: int64
+          description: Size of the content in bytes
+          nullable: true
+          example: 1024
+      required:
+        - content_name
+        - content_type
+        - content_url
+        - content_tags
+
+    PaginatedContentResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          description: Array of content items for the current page
+          items:
+            $ref: '#/components/schemas/ContentInfo'
         total:
           type: integer
-          description: Total number of images
+          description: Total number of items across all pages
+          example: 352
         page:
           type: integer
           description: Current page number
-        per_page:
+          minimum: 1
+          example: 1
+        total_pages:
+          type: integer
+          description: Total number of pages
+          minimum: 1
+          example: 8
+        page_size:
           type: integer
           description: Number of items per page
+          example: 50
       required:
-        - images
+        - items
         - total
         - page
-        - per_page
-
-    ImageMetadata:
-      type: object
-      properties:
-        filename:
-          type: string
-          example: "example.jpg"
-        dimensions:
-          type: array
-          items:
-            type: integer
-          minItems: 2
-          maxItems: 2
-          example: [800, 600]
-        size_bytes:
-          type: integer
-          example: 1024
-        last_modified:
-          type: string
-          format: date-time
-        format:
-          type: string
-          example: "jpeg"
-      required:
-        - filename
-        - size_bytes
-        - last_modified
+        - total_pages
+        - page_size
 
     ErrorResponse:
       type: object
@@ -299,57 +181,12 @@ components:
         error:
           type: string
           description: Error message
-        code:
-          type: string
-          description: Error code
+          example: "No image_name provided"
       required:
         - error
-
-    ContentInfo:
-      type: object
-      properties:
-        content_name:
-          type: string
-          description: Name of the related content
-        content_type:
-          type: string
-          description: Type of content (e.g., mp4, zip)
-        content_url:
-          type: string
-          description: URL or path to access the content
-        content_tags:
-          type: array
-          items:
-            type: string
-          description: Tags associated with the content
-        content_created:
-          type: integer
-          format: int64
-          nullable: true
-          description: Unix timestamp when the content was created
-        content_viewed:
-          type: integer
-          format: int64
-          nullable: true
-          description: Unix timestamp when the content was last viewed
-        content_size:
-          type: integer
-          format: int64
-          nullable: true
-          description: Size of the content in bytes
-      required:
-        - content_name
-        - content_type
-        - content_url
-        - content_tags
-        - content_created
-        - content_viewed
-        - content_size
 
 tags:
   - name: System
     description: System-related endpoints
-  - name: Images
-    description: Image management endpoints
   - name: Content
     description: Content-related endpoints

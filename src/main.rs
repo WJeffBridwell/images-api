@@ -64,7 +64,7 @@ async fn main() -> std::io::Result<()> {
             .service(fs::Files::new("/static", "static").show_files_listing())
             .configure(handlers::init_routes)
     })
-    .bind(("127.0.0.1", 8081))?
+    .bind(("192.168.86.242", 8081))?
     .run()
     .await
 }

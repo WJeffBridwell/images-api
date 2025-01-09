@@ -107,13 +107,13 @@ cargo test
 cargo run
 ```
 
-The server will start on `http://localhost:8081`
+The server will start on `http://192.168.86.242:8081`
 
 ## API Documentation
 
 The API is documented using OpenAPI 3.0 specification. View the full documentation at:
-- Local: http://localhost:8081/docs
-- Swagger UI: http://localhost:8081/swagger-ui
+- Local: http://192.168.86.242:8081/docs
+- Swagger UI: http://192.168.86.242:8081/swagger-ui
 
 Key endpoints:
 - `GET /health` - Health check

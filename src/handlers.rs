@@ -317,6 +317,8 @@ pub async fn search_image_content(
     query: web::Query<ImageContentQuery>,
 ) -> Result<HttpResponse, Error> {
     let image_name = &query.image_name;
+    let page = query.page;
+    let page_size = query.page_size;
 
     // Check if image_name is provided
     if image_name.is_empty() {
@@ -326,9 +328,9 @@ pub async fn search_image_content(
         }))); 
     }
 
-    debug!("Searching for content related to image: {}", image_name);
-    let content = crate::finder::search_content(image_name);
-    debug!("Found {} content items", content.len());
+    debug!("Searching for content related to image: {} (page {}, size {})", image_name, page, page_size);
+    let content = crate::finder::search_content(image_name, page, page_size);
+    debug!("Found {} content items out of {} total", content.items.len(), content.total);
 
     Ok(HttpResponse::Ok().json(content))
 }
@@ -497,6 +499,18 @@ pub struct OpenInPreviewRequest {
 #[derive(Debug, Deserialize)]
 pub struct ImageContentQuery {
     pub image_name: String,
+    #[serde(default = "default_page")]
+    pub page: usize,
+    #[serde(default = "default_page_size")]
+    pub page_size: usize,
+}
+
+fn default_page() -> usize {
+    1
+}
+
+fn default_page_size() -> usize {
+    50
 }
 
 /// Query parameters for image listing endpoint
