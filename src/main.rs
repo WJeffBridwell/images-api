@@ -13,19 +13,16 @@
  * - Health checks
  */
 
-use actix_web::{middleware::Logger, web, App, HttpServer};
 use actix_cors::Cors;
-use actix_files as fs;
-use env_logger::Env;
-use log;
+use actix_web::{middleware::Logger, web, App, HttpServer};
+use env_logger::{Builder, Env};
+use mongodb::Client;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+
 use images_api::handlers;
 use images_api::image_processor::ImageProcessor;
 use std::fs::File;
-use env_logger::Builder;
-use std::io::Write;
-use mongodb::{Client, Database};
 
 /// Cache type for storing image data
 pub type ImageCache = HashMap<String, Vec<u8>>;
@@ -75,7 +72,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(db.clone())
             .wrap(Logger::default())
             .wrap(cors)
-            .service(fs::Files::new("/static", "static").show_files_listing())
+            .service(actix_files::Files::new("/static", "static").show_files_listing())
             .configure(handlers::init_routes)
     })
     .bind(("192.168.86.242", 8081))?

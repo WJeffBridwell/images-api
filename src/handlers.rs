@@ -12,17 +12,13 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
 };
 use tokio::fs;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use percent_encoding::percent_decode_str;
 use std::borrow::Cow;
-use urlencoding;
-
-use crate::config::Config;
 
 pub struct AppState {
     // Add any fields your application needs to share across requests
@@ -34,15 +30,6 @@ fn default_page() -> usize {
 
 fn default_limit() -> usize {
     20
-}
-
-fn is_image_file(path: &Path) -> bool {
-    if let Some(ext) = path.extension() {
-        if let Some(ext_str) = ext.to_str() {
-            return matches!(ext_str.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "gif" | "webp");
-        }
-    }
-    false
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -261,11 +248,18 @@ pub async fn list_images(
             seen_names.insert(filename.to_string());
 
             let date = match doc_result.get_document("base_attributes") {
-                Ok(attrs) => match attrs.get_datetime("creation_time") {
+                Ok(attrs) => match attrs.get_datetime("modification_time") {
                     Ok(dt) => dt.to_chrono().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                     Err(e) => {
-                        error!("Error getting creation_time: {}", e);
-                        Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                        error!("Error getting modification_time: {}", e);
+                        // Try creation_time as fallback
+                        match attrs.get_datetime("creation_time") {
+                            Ok(dt) => dt.to_chrono().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                            Err(_) => {
+                                error!("Error getting creation_time as fallback: {}", e);
+                                Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                            }
+                        }
                     }
                 },
                 Err(e) => {
@@ -370,7 +364,7 @@ pub async fn image_info(
 /// using the macOS Finder API.
 #[get("/image-content")]
 pub async fn search_image_content(
-    req: HttpRequest,
+    _req: HttpRequest,
     query: web::Query<ImageContentQuery>,
 ) -> Result<HttpResponse, Error> {
     let image_name = &query.image_name;
