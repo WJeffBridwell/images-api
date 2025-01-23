@@ -38,3 +38,15 @@ src/error
 lcov.info
 *.html
 coverage/
+
+# OpenAPI docs
+openapi.personal-website.yaml
+
+# Test and analysis files
+3001-gallery-images-response.txt
+new-response.txt
+content_analysis.json
+test_data/
+
+# MongoDB
+mongodb-macos-aarch64-8.0.4/
