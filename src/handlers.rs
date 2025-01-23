@@ -190,7 +190,7 @@ pub async fn list_images(
 
     // Sort by filename ascending
     let sort_doc = doc! { "filename": 1 };
-    let filter = Document::new();
+    let filter = doc! { "path": { "$not": { "$regex": "/\\.thumbnails/" } } };
     let find_options = FindOptions::builder().sort(sort_doc).build();
 
     let mut cursor = collection
@@ -213,15 +213,33 @@ pub async fn list_images(
         // Get size from base_attributes
         let size = match doc_result.get_document("base_attributes") {
             Ok(attrs) => {
+                if filename == "aali-kali.jpeg" {
+                    debug!("Found aali-kali.jpeg");
+                    debug!("Full document: {:?}", doc_result);
+                    debug!("Base attributes: {:?}", attrs);
+                }
                 match attrs.get("size") {
                     Some(size_val) => {
-                        if let Some(size_i32) = size_val.as_i32() {
-                            size_i32 as i64
-                        } else if let Some(size_i64) = size_val.as_i64() {
-                            size_i64
-                        } else {
-                            error!("Size value is not an integer: {:?}", size_val);
-                            0
+                        if filename == "aali-kali.jpeg" {
+                            debug!("Size value: {:?}", size_val);
+                        }
+                        match (size_val.as_i64(), size_val.as_i32()) {
+                            (Some(size_i64), _) => {
+                                if filename == "aali-kali.jpeg" {
+                                    debug!("Using i64 size: {}", size_i64);
+                                }
+                                size_i64
+                            },
+                            (None, Some(size_i32)) => {
+                                if filename == "aali-kali.jpeg" {
+                                    debug!("Using i32 size: {}", size_i32);
+                                }
+                                size_i32 as i64
+                            },
+                            _ => {
+                                error!("Size value is not an integer: {:?}", size_val);
+                                0
+                            }
                         }
                     },
                     None => {
@@ -236,8 +254,8 @@ pub async fn list_images(
             }
         };
 
-        // URL encode spaces and parentheses in filename for URL
-        let encoded_filename = urlencoding::encode(filename);
+        // URL encode only spaces in filename for URL
+        let encoded_filename = filename.replace(" ", "%20");
 
         if !seen_names.contains(filename) {
             seen_names.insert(filename.to_string());
@@ -263,6 +281,10 @@ pub async fn list_images(
                 "date": date,
                 "tags": doc_result.get_array("tags").unwrap_or(&Vec::new())
             }));
+
+            if filename == "aali-kali.jpeg" {
+                debug!("Response JSON for aali-kali.jpeg: {:?}", images.last().unwrap());
+            }
         }
     }
 
