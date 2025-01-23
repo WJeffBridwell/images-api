@@ -14,11 +14,16 @@ use serde_json::json;
 use std::{
     path::PathBuf,
     process::Command,
+    io::Write,
+    fs,
 };
-use tokio::fs;
+use tokio::fs as tokio_fs;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use percent_encoding::percent_decode_str;
 use std::borrow::Cow;
+use hex;
+use plist;
+use tempfile::NamedTempFile;
 
 pub struct AppState {
     // Add any fields your application needs to share across requests
@@ -268,12 +273,36 @@ pub async fn list_images(
                 }
             };
 
+            // Get tags from macos_attributes.xattr
+            let tags = match doc_result.get_document("macos_attributes") {
+                Ok(attrs) => match attrs.get_document("xattr") {
+                    Ok(xattr) => match xattr.get_str("com.apple.metadata:_kMDItemUserTags") {
+                        Ok(hex_str) => {
+                            debug!("Found user tags for {}: {}", filename, hex_str);
+                            parse_binary_plist_tags(hex_str)
+                        },
+                        Err(e) => {
+                            error!("Error getting user tags for {}: {}", filename, e);
+                            Vec::new()
+                        }
+                    },
+                    Err(e) => {
+                        error!("Error getting xattr for {}: {}", filename, e);
+                        Vec::new()
+                    }
+                },
+                Err(e) => {
+                    error!("Error getting macos_attributes for {}: {}", filename, e);
+                    Vec::new()
+                }
+            };
+
             images.push(json!({
                 "name": filename,
                 "url": format!("/api/gallery/proxy-image/{}", encoded_filename),
                 "size": size,
                 "date": date,
-                "tags": doc_result.get_array("tags").unwrap_or(&Vec::new())
+                "tags": tags
             }));
 
             if filename == "aali-kali.jpeg" {
@@ -283,6 +312,78 @@ pub async fn list_images(
     }
 
     Ok(HttpResponse::Ok().json(json!({ "images": images })))
+}
+
+/// Parse binary plist tags from the hex string in macos_attributes.xattr
+fn parse_binary_plist_tags(hex_str: &str) -> Vec<String> {
+    debug!("Parsing tags from hex string: {}", hex_str);
+    // Split by newlines, trim each line, and join
+    let hex_str = hex_str
+        .split('\n')
+        .map(|line| line.trim())
+        .collect::<Vec<_>>()
+        .join("");
+    // Remove spaces
+    let hex_str = hex_str.replace(" ", "");
+    debug!("Cleaned hex string: {}", hex_str);
+    match hex::decode(&hex_str) {
+        Ok(bytes) => {
+            debug!("Decoded {} bytes", bytes.len());
+            // Create a temporary file and write the bytes
+            match NamedTempFile::new() {
+                Ok(mut temp_file) => {
+                    if let Err(e) = temp_file.write_all(&bytes) {
+                        error!("Error writing to temp file: {}", e);
+                        return Vec::new();
+                    }
+                    
+                    match plist::Value::from_file(temp_file.path()) {
+                        Ok(plist::Value::Array(items)) => {
+                            debug!("Found array with {} items", items.len());
+                            items.into_iter()
+                                .filter_map(|item| {
+                                    if let plist::Value::String(s) = item {
+                                        debug!("Found raw tag: {}", s);
+                                        // Extract just the color name from the tag
+                                        let color = s.chars()
+                                            .take_while(|c| c.is_alphabetic())
+                                            .collect::<String>()
+                                            .to_lowercase();
+                                        
+                                        // Only return if it's a valid macOS tag color
+                                        match color.as_str() {
+                                            "red" | "orange" | "yellow" | "green" | 
+                                            "blue" | "purple" | "gray" | "grey" => Some(color),
+                                            _ => None
+                                        }
+                                    } else {
+                                        debug!("Found non-string item: {:?}", item);
+                                        None
+                                    }
+                                })
+                                .collect()
+                        },
+                        Ok(other) => {
+                            debug!("Found non-array value: {:?}", other);
+                            Vec::new()
+                        },
+                        Err(e) => {
+                            error!("Error parsing plist: {}", e);
+                            Vec::new()
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("Error creating temp file: {}", e);
+                    Vec::new()
+                }
+            }
+        },
+        Err(e) => {
+            error!("Error decoding hex string: {}", e);
+            Vec::new()
+        }
+    }
 }
 
 /// Image serving endpoint handler
@@ -304,7 +405,7 @@ pub async fn serve_image(
         return HttpResponse::NotFound().body("Image not found");
     }
 
-    let file = match fs::File::open(&path).await {
+    let file = match tokio_fs::File::open(&path).await {
         Ok(file) => file,
         Err(e) => {
             error!("Failed to open image file: {}", e);
@@ -445,13 +546,33 @@ pub async fn open_in_preview(form: web::Form<OpenInPreviewRequest>, _images_dir:
     }
 }
 
-#[get("/view/{name}")]
+#[get("/image-content/{filename}")]
 pub async fn view_content(req: HttpRequest, name: web::Path<String>) -> impl Responder {
-    let path = format!("static/{}", name);
-    match NamedFile::open(path) {
-        Ok(file) => file.into_response(&req),
-        Err(_) => HttpResponse::NotFound().body("File not found"),
-    }
+    let filename = name.into_inner();
+    let path = PathBuf::from("/Volumes/VideosNew/Models").join(&filename);
+
+    let file = match tokio_fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(e) => {
+            error!("Failed to open file: {}", e);
+            return HttpResponse::NotFound().finish();
+        }
+    };
+
+    let stream = FramedRead::new(file, BytesCodec::new())
+        .map(|r| r.map(|b| b.freeze()));
+
+    // Determine content type based on file extension
+    let content_type = match path.extension().and_then(|e| e.to_str()) {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        _ => "application/octet-stream",
+    };
+
+    HttpResponse::Ok()
+        .content_type(content_type)
+        .streaming(stream)
 }
 
 #[get("/videos/haley-reed/{filename}")]
