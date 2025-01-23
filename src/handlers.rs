@@ -1,22 +1,28 @@
-use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, Error};
+use actix_web::{get, post, web, Error, HttpRequest, HttpResponse, Responder};
 use actix_files::NamedFile;
-use mime_guess::from_path;
-use std::path::{Path, PathBuf};
-use chrono::{DateTime, TimeZone, Utc};
-use serde::{Serialize, Deserialize};
+use chrono::Utc;
+use futures::{StreamExt, TryStreamExt};
 use log::{debug, error};
-use mongodb::Database;
-use mongodb::bson::{self, doc, Document, Bson};
-use mongodb::options::FindOptions;
-use futures::TryStreamExt;
-use std::sync::LazyLock;
-use image::{GenericImageView, io::Reader as ImageReader};
-use std::io::Cursor;
+use mime_guess::from_path;
+use mongodb::{
+    bson::{doc, Document},
+    options::FindOptions,
+    Database,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    process::Command,
+};
 use tokio::fs;
 use tokio_util::codec::{BytesCodec, FramedRead};
-use std::process::Command;
-use serde_json::json;
-use futures::StreamExt;
+use percent_encoding::percent_decode_str;
+use std::borrow::Cow;
+use urlencoding;
+
+use crate::config::Config;
 
 pub struct AppState {
     // Add any fields your application needs to share across requests
@@ -41,7 +47,7 @@ fn is_image_file(path: &Path) -> bool {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PaginatedImageResponse {
-    pub items: Vec<ImageMetadata>,
+    pub images: Vec<ImageMetadata>,
     pub total: i64,
     pub page: i32,
     #[serde(rename = "totalPages")]
@@ -53,13 +59,17 @@ pub struct PaginatedImageResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImageMetadata {
     pub name: String,
+    #[serde(rename = "url")]
     pub path: String,
-    pub size: i32,
-    #[serde(rename = "modifiedDate")]
+    pub size: i64,
+    #[serde(rename = "date")]
     pub modified_date: String,
+    #[serde(skip_serializing)]
     pub dimensions: Option<ImageDimensions>,
-    #[serde(rename = "type")]
+    #[serde(skip_serializing, rename = "type")]
     pub kind: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -173,124 +183,90 @@ pub async fn health_check() -> impl Responder {
 #[get("/gallery/images")]
 pub async fn list_images(
     db: web::Data<Database>,
-    query: web::Query<ListImagesQuery>,
+    _query: web::Query<ListImagesQuery>,
 ) -> Result<HttpResponse, Error> {
-    let page = query.page;
-    let limit = query.limit;
-    let skip = (page - 1) * limit;
-
-    let mut images = Vec::with_capacity(limit);
-    
-    // Initialize static empty document and vector for defaults
-    static EMPTY_DOC: LazyLock<Document> = LazyLock::new(|| Document::new());
-    static EMPTY_VEC: LazyLock<Vec<Bson>> = LazyLock::new(|| Vec::new());
-    
+    let mut images = Vec::new();
     let collection = db.collection::<Document>("models");
 
-    // Build sort document based on sort parameter
-    let sort_doc = match query.sort.as_deref() {
-        Some("name-asc") => doc! { "name": 1 },
-        Some("name-desc") => doc! { "name": -1 },
-        Some("date-asc") => doc! { "modified": 1 },
-        Some("date-desc") => doc! { "modified": -1 },
-        _ => doc! { "name": 1 }, // Default sort
-    };
-
-    // Build filter document for tag filtering
-    let filter = match &query.tag {
-        Some(tag) => doc! { "tags": tag },
-        None => Document::new(),
-    };
+    // Sort by filename ascending
+    let sort_doc = doc! { "filename": 1 };
+    let filter = Document::new();
+    let find_options = FindOptions::builder().sort(sort_doc).build();
 
     let mut cursor = collection
-        .find(filter.clone(), FindOptions::builder()
-            .sort(sort_doc)
-            .skip(skip as u64)
-            .limit(limit as i64)
-            .build())
+        .find(filter, find_options)
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
 
+    let mut seen_names = std::collections::HashSet::new();
+
     while let Some(doc_result) = cursor.try_next().await
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))? {
-        let filename = doc_result.get_str("filename").unwrap_or("unknown");
-        let path = doc_result.get_str("path").unwrap_or("unknown");
         
+        let filename = doc_result.get_str("filename").unwrap_or_default();
+        
+        // Skip .DS_Store and .thumbnails
+        if filename.starts_with(".") {
+            continue;
+        }
+
         // Get size from base_attributes
-        let size = if let Ok(base_attrs) = doc_result.get_document("base_attributes") {
-            base_attrs.get_i32("size").unwrap_or(0) as u64
-        } else {
-            0
-        };
-
-        let modified = if let Ok(base_attrs) = doc_result.get_document("base_attributes") {
-            if let Ok(modified_time) = base_attrs.get_f64("modified") {
-                Utc.timestamp_opt(modified_time as i64, 0)
-                    .single()
-                    .unwrap_or_else(|| Utc::now())
-            } else {
-                Utc::now()
+        let size = match doc_result.get_document("base_attributes") {
+            Ok(attrs) => {
+                match attrs.get("size") {
+                    Some(size_val) => {
+                        if let Some(size_i32) = size_val.as_i32() {
+                            size_i32 as i64
+                        } else if let Some(size_i64) = size_val.as_i64() {
+                            size_i64
+                        } else {
+                            error!("Size value is not an integer: {:?}", size_val);
+                            0
+                        }
+                    },
+                    None => {
+                        error!("No size field found in base_attributes");
+                        0
+                    }
+                }
+            },
+            Err(e) => {
+                error!("Error getting base_attributes: {}", e);
+                0
             }
-        } else {
-            Utc::now()
         };
 
-        // Get image metadata from macos_attributes.mdls
-        let (width, height, image_type) = if let Ok(macos_attrs) = doc_result.get_document("macos_attributes") {
-            if let Ok(mdls) = macos_attrs.get_document("mdls") {
-                let width = mdls.get_str("kMDItemPixelWidth")
-                    .map(|w| w.parse::<i32>().unwrap_or(0))
-                    .unwrap_or(0);
-                let height = mdls.get_str("kMDItemPixelHeight")
-                    .map(|h| h.parse::<i32>().unwrap_or(0))
-                    .unwrap_or(0);
-                let image_type = mdls.get_str("kMDItemKind")
-                    .map(|t| t.to_string())
-                    .unwrap_or_else(|_| "unknown".to_string());
-                (width, height, image_type)
-            } else {
-                (0, 0, "unknown".to_string())
-            }
-        } else {
-            (0, 0, "unknown".to_string())
-        };
+        // URL encode spaces and parentheses in filename for URL
+        let encoded_filename = urlencoding::encode(filename);
 
-        let tags = if let Ok(base_attrs) = doc_result.get_document("base_attributes") {
-            base_attrs.get_array("tags")
-                .unwrap_or(&EMPTY_VEC)
-                .iter()
-                .filter_map(|tag| tag.as_str().map(|s| s.to_string()))
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        };
+        if !seen_names.contains(filename) {
+            seen_names.insert(filename.to_string());
 
-        let image = ImageMetadata {
-            name: filename.to_string(),
-            path: format!("/api/gallery/proxy-image/{}", filename),
-            size: size as i32,
-            modified_date: modified.to_rfc3339(),
-            dimensions: Some(ImageDimensions {
-                width,
-                height,
-            }),
-            kind: Some(image_type),
-        };
-        images.push(image);
+            let date = match doc_result.get_document("base_attributes") {
+                Ok(attrs) => match attrs.get_datetime("creation_time") {
+                    Ok(dt) => dt.to_chrono().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    Err(e) => {
+                        error!("Error getting creation_time: {}", e);
+                        Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                    }
+                },
+                Err(e) => {
+                    error!("Error getting base_attributes for date: {}", e);
+                    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                }
+            };
+
+            images.push(json!({
+                "name": filename,
+                "url": format!("/api/gallery/proxy-image/{}", encoded_filename),
+                "size": size,
+                "date": date,
+                "tags": doc_result.get_array("tags").unwrap_or(&Vec::new())
+            }));
+        }
     }
 
-    let total = collection.count_documents(filter, None).await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
-
-    let response = PaginatedImageResponse {
-        items: images,
-        total: total.try_into().unwrap(),  // Convert u64 to i64
-        page: page as i32,
-        total_pages: (total as f64 / limit as f64).ceil() as i32,
-        page_size: limit as i32
-    };
-
-    Ok(HttpResponse::Ok().json(response))
+    Ok(HttpResponse::Ok().json(json!({ "images": images })))
 }
 
 /// Image serving endpoint handler
@@ -355,11 +331,13 @@ pub async fn image_info(
 
     let metadata = ImageMetadata {
         name: filename.to_string(),
-        path: format!("/api/gallery/proxy-image/{}", filename),
+        path: format!("/api/gallery/proxy-image/{}", 
+            percent_decode_str(&filename).decode_utf8().unwrap_or_else(|_| Cow::Owned(filename.to_string()))),
         size: 0,
         modified_date: Utc::now().to_rfc3339(),
         dimensions: None,
         kind: None,
+        tags: vec![],
     };
     HttpResponse::Ok().json(metadata)
 }
