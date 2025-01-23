@@ -54,15 +54,21 @@ mod tests {
     async fn test_list_images_empty_directory() {
         let (_temp_dir, app) = setup_test_app().await;
         let app = test::init_service(app).await;
-        let req = test::TestRequest::get().uri("/images").to_request();
+        let req = test::TestRequest::get()
+            .uri("/gallery/images")
+            .to_request();
         let resp = test::call_service(&app, req).await;
 
         assert!(resp.status().is_success());
         
         let body = test::read_body(resp).await;
-        let images: Vec<ImageMetadata> = serde_json::from_slice(&body).unwrap();
+        let response: PaginatedImageResponse = serde_json::from_slice(&body).unwrap();
         
-        assert!(images.is_empty());
+        assert!(response.items.is_empty());
+        assert_eq!(response.total, 0);
+        assert_eq!(response.page, 1);
+        assert_eq!(response.total_pages, 0);
+        assert_eq!(response.page_size, 20);
     }
 
     #[actix_rt::test]
@@ -79,33 +85,45 @@ mod tests {
 
         // Test default pagination (page 1, per_page 10)
         let req = test::TestRequest::get()
-            .uri("/images")
+            .uri("/gallery/images")
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
         let body = test::read_body(resp).await;
-        let images: Vec<ImageMetadata> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(images.len(), 3); // All images returned
+        let response: PaginatedImageResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response.items.len(), 3); // All images returned
+        assert_eq!(response.total, 3);
+        assert_eq!(response.page, 1);
+        assert_eq!(response.total_pages, 1);
+        assert_eq!(response.page_size, 20);
 
         // Test custom pagination
         let req = test::TestRequest::get()
-            .uri("/images?per_page=2&page=1")
+            .uri("/gallery/images?page=1&limit=2")
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
         let body = test::read_body(resp).await;
-        let images: Vec<ImageMetadata> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(images.len(), 2); // Only 2 images per page
+        let response: PaginatedImageResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response.items.len(), 2); // Only 2 images per page
+        assert_eq!(response.total, 3);
+        assert_eq!(response.page, 1);
+        assert_eq!(response.total_pages, 2);
+        assert_eq!(response.page_size, 2);
 
         // Test second page
         let req = test::TestRequest::get()
-            .uri("/images?per_page=2&page=2")
+            .uri("/gallery/images?page=2&limit=2")
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
         let body = test::read_body(resp).await;
-        let images: Vec<ImageMetadata> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(images.len(), 1); // Last image on second page
+        let response: PaginatedImageResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response.items.len(), 1); // Last image on second page
+        assert_eq!(response.total, 3);
+        assert_eq!(response.page, 2);
+        assert_eq!(response.total_pages, 2);
+        assert_eq!(response.page_size, 2);
     }
 
     #[actix_rt::test]
@@ -128,27 +146,27 @@ mod tests {
 
         // Test sorting by name ascending
         let req = test::TestRequest::get()
-            .uri("/images?sort_by=name&order=asc")
+            .uri("/gallery/images?sort=name-asc")
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
         let body = test::read_body(resp).await;
-        let images: Vec<ImageMetadata> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(images[0].filename, "test1.jpg");
-        assert_eq!(images[1].filename, "test2.jpg");
-        assert_eq!(images[2].filename, "test3.jpg");
+        let response: PaginatedImageResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response.items[0].name, "test1.jpg");
+        assert_eq!(response.items[1].name, "test2.jpg");
+        assert_eq!(response.items[2].name, "test3.jpg");
 
-        // Test sorting by size descending
+        // Test sorting by name descending
         let req = test::TestRequest::get()
-            .uri("/images?sort_by=size&order=desc")
+            .uri("/gallery/images?sort=name-desc")
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
         let body = test::read_body(resp).await;
-        let images: Vec<ImageMetadata> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(images[0].filename, "test3.jpg");
-        assert_eq!(images[1].filename, "test2.jpg");
-        assert_eq!(images[2].filename, "test1.jpg");
+        let response: PaginatedImageResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response.items[0].name, "test3.jpg");
+        assert_eq!(response.items[1].name, "test2.jpg");
+        assert_eq!(response.items[2].name, "test1.jpg");
     }
 
     #[actix_rt::test]

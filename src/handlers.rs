@@ -39,30 +39,30 @@ fn is_image_file(path: &Path) -> bool {
     false
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PaginatedImageResponse {
-    pub items: Vec<ImageDetail>,
-    pub total: i32,
+    pub items: Vec<ImageMetadata>,
+    pub total: i64,
     pub page: i32,
+    #[serde(rename = "totalPages")]
     pub total_pages: i32,
+    #[serde(rename = "pageSize")]
     pub page_size: i32,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ImageDetail {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImageMetadata {
     pub name: String,
     pub path: String,
-    pub size: u64,
+    pub size: i32,
     #[serde(rename = "modifiedDate")]
     pub modified_date: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub tags: Vec<String>,
+    pub dimensions: Option<ImageDimensions>,
     #[serde(rename = "type")]
-    pub image_type: String,
-    pub dimensions: ImageDimensions,
+    pub kind: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ImageDimensions {
     pub width: i32,
     pub height: i32,
@@ -115,7 +115,7 @@ pub struct HealthResponse {
 
 /// Response structure for image metadata
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ImageMetadata {
+pub struct ImageDetail {
     /// Filename of the image
     pub filename: String,
     /// Dimensions of the image
@@ -265,17 +265,16 @@ pub async fn list_images(
             vec![]
         };
 
-        let image = ImageDetail {
+        let image = ImageMetadata {
             name: filename.to_string(),
             path: format!("/api/gallery/proxy-image/{}", filename),
-            size,
+            size: size as i32,
             modified_date: modified.to_rfc3339(),
-            tags,
-            image_type,
-            dimensions: ImageDimensions {
+            dimensions: Some(ImageDimensions {
                 width,
                 height,
-            },
+            }),
+            kind: Some(image_type),
         };
         images.push(image);
     }
@@ -283,13 +282,13 @@ pub async fn list_images(
     let total = collection.count_documents(filter, None).await
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
 
-    let response = json!({
-        "items": images,
-        "total": total,
-        "page": page,
-        "totalPages": (total as f64 / limit as f64).ceil() as i32,
-        "pageSize": limit as i32
-    });
+    let response = PaginatedImageResponse {
+        items: images,
+        total: total.try_into().unwrap(),  // Convert u64 to i64
+        page: page as i32,
+        total_pages: (total as f64 / limit as f64).ceil() as i32,
+        page_size: limit as i32
+    };
 
     Ok(HttpResponse::Ok().json(response))
 }
@@ -355,12 +354,12 @@ pub async fn image_info(
     }
 
     let metadata = ImageMetadata {
-        filename: filename.to_string(),
+        name: filename.to_string(),
+        path: format!("/api/gallery/proxy-image/{}", filename),
+        size: 0,
+        modified_date: Utc::now().to_rfc3339(),
         dimensions: None,
-        size_bytes: 0,
-        last_modified: Utc::now(),
-        format: None,
-        data: None,
+        kind: None,
     };
     HttpResponse::Ok().json(metadata)
 }

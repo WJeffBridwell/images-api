@@ -1,192 +1,148 @@
-openapi: 3.0.3
+openapi: 3.0.0
 info:
   title: Images API
-  description: |
-    A high-performance image serving and processing API built with Rust and Actix Web.
-    Provides endpoints for image retrieval, processing, and metadata management.
   version: 1.0.0
-  contact:
-    name: Jeff Bridwell
+  description: API for managing and serving images
+
 servers:
   - url: http://192.168.86.242:8081
     description: Local development server
 
 paths:
-  /health:
+  /images:
     get:
-      summary: Health check endpoint
-      description: Returns the current health status of the service
-      operationId: healthCheck
-      tags:
-        - System
+      summary: List images
+      description: Returns a paginated list of images
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Page number for pagination
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 10
+          description: Number of items per page
       responses:
         '200':
-          description: Service is healthy
+          description: Successful response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HealthResponse'
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Image'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  totalPages:
+                    type: integer
+                  pageSize:
+                    type: integer
 
-  /image-content:
+  /images/{id}:
     get:
-      summary: Search for content related to an image
-      description: |
-        Searches for movies, archives, and folders related to the given image name.
-        Results are paginated and include metadata about the files found.
-      operationId: searchImageContent
-      tags:
-        - Content
+      summary: Get image by ID
       parameters:
-        - name: image_name
-          in: query
-          description: Name of the image to search for
+        - name: id
+          in: path
           required: true
           schema:
             type: string
-        - name: page
-          in: query
-          description: Page number (1-based)
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: page_size
-          in: query
-          description: Number of items per page
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 50
+          description: Image ID
       responses:
         '200':
-          description: Successfully retrieved content
+          description: Successful response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedContentResponse'
-        '400':
-          description: Bad request - missing or invalid parameters
+                $ref: '#/components/schemas/Image'
+        '404':
+          description: Image not found
+
+  /images/search:
+    get:
+      summary: Search images
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Page number
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 10
+          description: Items per page
+      responses:
+        '200':
+          description: Search results
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Image'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  totalPages:
+                    type: integer
+                  pageSize:
+                    type: integer
+
+  /health:
+    get:
+      summary: Health check endpoint
+      responses:
+        '200':
+          description: Service is healthy
+        '500':
+          description: Service is unhealthy
 
 components:
   schemas:
-    HealthResponse:
+    Image:
       type: object
       properties:
-        status:
+        id:
           type: string
-          description: Current health status of the service
-          example: "healthy"
-        commit:
+        path:
           type: string
-          description: Current git commit hash
-          example: "a1b2c3d4"
-        timestamp:
+        size:
+          type: integer
+        modifiedDate:
           type: string
           format: date-time
-          description: Current server timestamp
-          example: "2025-01-09T11:53:13-05:00"
-      required:
-        - status
-        - commit
-        - timestamp
-
-    ContentInfo:
-      type: object
-      properties:
-        content_name:
-          type: string
-          description: Name of the content file
-          example: "example.mp4"
-        content_type:
-          type: string
-          description: Type/extension of the content
-          example: "mp4"
-        content_url:
-          type: string
-          description: Full path to the content
-          example: "/path/to/content/example.mp4"
-        content_tags:
-          type: array
-          description: User-assigned tags for the content
-          items:
-            type: string
-          example: ["tag1", "tag2"]
-        content_created:
-          type: integer
-          format: int64
-          description: Unix timestamp of content creation time
-          nullable: true
-          example: 1641740400
-        content_viewed:
-          type: integer
-          format: int64
-          description: Unix timestamp of last viewed time
-          nullable: true
-          example: 1641740400
-        content_size:
-          type: integer
-          format: int64
-          description: Size of the content in bytes
-          nullable: true
-          example: 1024
-      required:
-        - content_name
-        - content_type
-        - content_url
-        - content_tags
-
-    PaginatedContentResponse:
-      type: object
-      properties:
-        items:
-          type: array
-          description: Array of content items for the current page
-          items:
-            $ref: '#/components/schemas/ContentInfo'
-        total:
-          type: integer
-          description: Total number of items across all pages
-          example: 352
-        page:
-          type: integer
-          description: Current page number
-          minimum: 1
-          example: 1
-        total_pages:
-          type: integer
-          description: Total number of pages
-          minimum: 1
-          example: 8
-        page_size:
-          type: integer
-          description: Number of items per page
-          example: 50
-      required:
-        - items
-        - total
-        - page
-        - total_pages
-        - page_size
-
-    ErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-          description: Error message
-          example: "No image_name provided"
-      required:
-        - error
-
-tags:
-  - name: System
-    description: System-related endpoints
-  - name: Content
-    description: Content-related endpoints
+        baseAttributes:
+          type: object
+          properties:
+            width:
+              type: integer
+            height:
+              type: integer
+            format:
+              type: string
+            tags:
+              type: array
+              items:
+                type: string
