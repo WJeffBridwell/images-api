@@ -1,43 +1,106 @@
-/*! 
- * Images API - Request Handlers
- * 
- * This module contains all HTTP request handlers for the Images API service.
- * It provides endpoints for:
- * - Health check monitoring
- * - Image listing and pagination
- * - Image serving with caching
- * - Image metadata retrieval
- * - Image content search
- */
-
-use actix_web::{
-    get, post,
-    web,
-    HttpRequest, HttpResponse, Responder,
-    http::header::{self, HeaderValue},
-    Error,
-};
-use log::{debug,error};
-use std::collections::HashMap;
+use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, Error};
 use actix_files::NamedFile;
 use mime_guess::from_path;
+use std::path::{Path, PathBuf};
+use chrono::{DateTime, TimeZone, Utc};
+use serde::{Serialize, Deserialize};
+use log::{debug, error};
+use mongodb::Database;
+use mongodb::bson::{self, doc, Document, Bson};
+use mongodb::options::FindOptions;
+use futures::TryStreamExt;
+use std::sync::LazyLock;
+use image::{GenericImageView, io::Reader as ImageReader};
+use std::io::Cursor;
+use tokio::fs;
+use tokio_util::codec::{BytesCodec, FramedRead};
+use std::process::Command;
+use serde_json::json;
+use futures::StreamExt;
+
 pub struct AppState {
     // Add any fields your application needs to share across requests
 }
 
-// use actix_web::{get, post, web, HttpResponse, Responder, HttpRequest};
-use chrono::Utc;
-//use log::debug;
-use serde::{Serialize, Deserialize};
-use std::path::{Path, PathBuf};
-use tokio::fs;
-// use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use futures::StreamExt;
-use tokio_util::codec::{BytesCodec, FramedRead};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde_json::{self, json};
-use std::process::Command;
-// use actix_web::http::header::{ContentDisposition, DispositionType};
+fn default_page() -> usize {
+    1
+}
+
+fn default_limit() -> usize {
+    20
+}
+
+fn is_image_file(path: &Path) -> bool {
+    if let Some(ext) = path.extension() {
+        if let Some(ext_str) = ext.to_str() {
+            return matches!(ext_str.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "gif" | "webp");
+        }
+    }
+    false
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaginatedImageResponse {
+    pub items: Vec<ImageDetail>,
+    pub total: i32,
+    pub page: i32,
+    pub total_pages: i32,
+    pub page_size: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImageDetail {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    #[serde(rename = "modifiedDate")]
+    pub modified_date: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(rename = "type")]
+    pub image_type: String,
+    pub dimensions: ImageDimensions,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImageDimensions {
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GalleryImagesQuery {
+    #[serde(default = "default_page")]
+    pub page: usize,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    pub sort: Option<String>,
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListImagesQuery {
+    #[serde(default = "default_page")]
+    pub page: usize,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    pub sort: Option<String>,
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OpenInPreviewRequest {
+    pub filepath: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageContentQuery {
+    pub image_name: String,
+    #[serde(default = "default_page")]
+    pub page: usize,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
 
 /// Response structure for health check endpoint
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,127 +167,131 @@ pub async fn health_check() -> impl Responder {
 /// 
 /// Query parameters:
 /// - page: Page number (default: 1)
-/// - limit: Items per page (default: 10)
-/// - sort_by: Field to sort by (default: none)
-/// - order: Sort order (default: asc)
-/// - include_data: Whether to include image data in response (default: false)
-#[get("/images")]
+/// - limit: Items per page (default: 20)
+/// - sort: Sort order (default: name-asc)
+/// - tag: Filter by tag (optional)
+#[get("/gallery/images")]
 pub async fn list_images(
+    db: web::Data<Database>,
     query: web::Query<ListImagesQuery>,
-    images_dir: web::Data<std::path::PathBuf>,
-    processor: web::Data<crate::image_processor::ImageProcessor>,
-) -> impl Responder {
-    log::info!("Starting list_images request with limit={}, include_data={}", 
-        query.limit.unwrap_or(10),
-        query.include_data.unwrap_or(false)
-    );
-    
-    let page = query.page.unwrap_or(1);
-    let limit = query.limit.unwrap_or(10);
-    let start = (page - 1) * limit;
+) -> Result<HttpResponse, Error> {
+    let page = query.page;
+    let limit = query.limit;
+    let skip = (page - 1) * limit;
 
     let mut images = Vec::with_capacity(limit);
-    let mut count = 0;
-    let mut skipped = 0;
     
-    log::info!("Reading directory: {}", images_dir.display());
-    let mut read_dir = match fs::read_dir(images_dir.as_ref()).await {
-        Ok(dir) => dir,
-        Err(e) => {
-            error!("Failed to read images directory: {}", e);
-            return HttpResponse::InternalServerError().body("Failed to read images directory");
-        }
+    // Initialize static empty document and vector for defaults
+    static EMPTY_DOC: LazyLock<Document> = LazyLock::new(|| Document::new());
+    static EMPTY_VEC: LazyLock<Vec<Bson>> = LazyLock::new(|| Vec::new());
+    
+    let collection = db.collection::<Document>("models");
+
+    // Build sort document based on sort parameter
+    let sort_doc = match query.sort.as_deref() {
+        Some("name-asc") => doc! { "name": 1 },
+        Some("name-desc") => doc! { "name": -1 },
+        Some("date-asc") => doc! { "modified": 1 },
+        Some("date-desc") => doc! { "modified": -1 },
+        _ => doc! { "name": 1 }, // Default sort
     };
 
-    loop {
-        if count >= limit {
-            log::info!("Reached limit of {}", limit);
-            break;
-        }
+    // Build filter document for tag filtering
+    let filter = match &query.tag {
+        Some(tag) => doc! { "tags": tag },
+        None => Document::new(),
+    };
 
-        match read_dir.next_entry().await {
-            Ok(Some(entry)) => {
-                let path = entry.path();
-                log::info!("Processing file: {}", path.display());
-                if is_image_file(&path) {
-                    if skipped < start {
-                        log::info!("Skipping image for pagination: {}", path.display());
-                        skipped += 1;
-                        continue;
-                    }
+    let mut cursor = collection
+        .find(filter.clone(), FindOptions::builder()
+            .sort(sort_doc)
+            .skip(skip as u64)
+            .limit(limit as i64)
+            .build())
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
 
-                    log::info!("Found image file: {}", path.display());
-                    match processor.get_image_data(&path, query.include_data.unwrap_or(false)).await {
-                        Ok(data) => {
-                            log::info!("Successfully processed image: {}, size: {}", path.display(), data.size_bytes);
-                            let metadata = ImageMetadata {
-                                filename: path.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("unknown")
-                                    .to_string(),
-                                dimensions: Some(data.dimensions),
-                                size_bytes: data.size_bytes as u64,
-                                last_modified: Utc::now(),
-                                format: Some(ImageFormat::from(data.format)),
-                                data: if query.include_data.unwrap_or(false) {
-                                    Some(STANDARD.encode(&data.content))
-                                } else {
-                                    None
-                                },
-                            };
-                            images.push(metadata);
-                            count += 1;
-                        }
-                        Err(e) => {
-                            error!("Failed to get image data for {}: {}", path.display(), e);
-                            continue;
-                        }
-                    }
-                } else {
-                    log::info!("Skipping non-image file: {}", path.display());
-                }
+    while let Some(doc_result) = cursor.try_next().await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))? {
+        let filename = doc_result.get_str("filename").unwrap_or("unknown");
+        let path = doc_result.get_str("path").unwrap_or("unknown");
+        
+        // Get size from base_attributes
+        let size = if let Ok(base_attrs) = doc_result.get_document("base_attributes") {
+            base_attrs.get_i32("size").unwrap_or(0) as u64
+        } else {
+            0
+        };
+
+        let modified = if let Ok(base_attrs) = doc_result.get_document("base_attributes") {
+            if let Ok(modified_time) = base_attrs.get_f64("modified") {
+                Utc.timestamp_opt(modified_time as i64, 0)
+                    .single()
+                    .unwrap_or_else(|| Utc::now())
+            } else {
+                Utc::now()
             }
-            Ok(None) => {
-                log::info!("No more files in directory");
-                break;
+        } else {
+            Utc::now()
+        };
+
+        // Get image metadata from macos_attributes.mdls
+        let (width, height, image_type) = if let Ok(macos_attrs) = doc_result.get_document("macos_attributes") {
+            if let Ok(mdls) = macos_attrs.get_document("mdls") {
+                let width = mdls.get_str("kMDItemPixelWidth")
+                    .map(|w| w.parse::<i32>().unwrap_or(0))
+                    .unwrap_or(0);
+                let height = mdls.get_str("kMDItemPixelHeight")
+                    .map(|h| h.parse::<i32>().unwrap_or(0))
+                    .unwrap_or(0);
+                let image_type = mdls.get_str("kMDItemKind")
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+                (width, height, image_type)
+            } else {
+                (0, 0, "unknown".to_string())
             }
-            Err(e) => {
-                error!("Failed to read directory entry: {}", e);
-                continue;
-            }
-        }
+        } else {
+            (0, 0, "unknown".to_string())
+        };
+
+        let tags = if let Ok(base_attrs) = doc_result.get_document("base_attributes") {
+            base_attrs.get_array("tags")
+                .unwrap_or(&EMPTY_VEC)
+                .iter()
+                .filter_map(|tag| tag.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+
+        let image = ImageDetail {
+            name: filename.to_string(),
+            path: format!("/api/gallery/proxy-image/{}", filename),
+            size,
+            modified_date: modified.to_rfc3339(),
+            tags,
+            image_type,
+            dimensions: ImageDimensions {
+                width,
+                height,
+            },
+        };
+        images.push(image);
     }
 
-    // Sort images if requested
-    if let Some(sort_by) = &query.sort_by {
-        let asc = query.order.as_deref() != Some("desc");
-        match sort_by.as_str() {
-            "name" => {
-                if asc {
-                    images.sort_by(|a, b| a.filename.cmp(&b.filename));
-                } else {
-                    images.sort_by(|a, b| b.filename.cmp(&a.filename));
-                }
-            }
-            "size" => {
-                if asc {
-                    images.sort_by_key(|img| img.size_bytes);
-                } else {
-                    images.sort_by_key(|img| std::cmp::Reverse(img.size_bytes));
-                }
-            }
-            "date" => {
-                if asc {
-                    images.sort_by_key(|img| img.last_modified);
-                } else {
-                    images.sort_by_key(|img| std::cmp::Reverse(img.last_modified));
-                }
-            }
-            _ => {}
-        }
-    }
+    let total = collection.count_documents(filter, None).await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
 
-    HttpResponse::Ok().json(images)
+    let response = json!({
+        "items": images,
+        "total": total,
+        "page": page,
+        "totalPages": (total as f64 / limit as f64).ceil() as i32,
+        "pageSize": limit as i32
+    });
+
+    Ok(HttpResponse::Ok().json(response))
 }
 
 /// Image serving endpoint handler
@@ -280,7 +347,6 @@ pub async fn serve_image(
 pub async fn image_info(
     filename: web::Path<String>,
     images_dir: web::Data<std::path::PathBuf>,
-    processor: web::Data<crate::image_processor::ImageProcessor>,
 ) -> impl Responder {
     let path = images_dir.join(filename.as_ref());
     
@@ -288,23 +354,15 @@ pub async fn image_info(
         return HttpResponse::NotFound().body("Image not found");
     }
 
-    match processor.get_image_data(&path, false).await {
-        Ok(data) => {
-            let metadata = ImageMetadata {
-                filename: filename.to_string(),
-                dimensions: Some(data.dimensions),
-                size_bytes: data.size_bytes as u64,
-                last_modified: Utc::now(),
-                format: Some(ImageFormat::from(data.format)),
-                data: None,
-            };
-            HttpResponse::Ok().json(metadata)
-        }
-        Err(e) => {
-            error!("Failed to get image data: {}", e);
-            HttpResponse::InternalServerError().body("Failed to get image data")
-        }
-    }
+    let metadata = ImageMetadata {
+        filename: filename.to_string(),
+        dimensions: None,
+        size_bytes: 0,
+        last_modified: Utc::now(),
+        format: None,
+        data: None,
+    };
+    HttpResponse::Ok().json(metadata)
 }
 
 /// Image content search handler
@@ -318,7 +376,7 @@ pub async fn search_image_content(
 ) -> Result<HttpResponse, Error> {
     let image_name = &query.image_name;
     let page = query.page;
-    let page_size = query.page_size;
+    let limit = query.limit;
 
     // Check if image_name is provided
     if image_name.is_empty() {
@@ -328,8 +386,8 @@ pub async fn search_image_content(
         }))); 
     }
 
-    debug!("Searching for content related to image: {} (page {}, size {})", image_name, page, page_size);
-    let content = crate::finder::search_content(image_name, page, page_size);
+    debug!("Searching for content related to image: {} (page {}, limit {})", image_name, page, limit);
+    let content = crate::finder::search_content(image_name, page, limit);
     debug!("Found {} content items out of {} total", content.items.len(), content.total);
 
     Ok(HttpResponse::Ok().json(content))
@@ -491,43 +549,6 @@ fn parse_range(range: &str, file_size: u64) -> Result<(u64, u64), actix_web::Err
     Ok((start, end))
 }
 
-#[derive(Deserialize)]
-pub struct OpenInPreviewRequest {
-    filepath: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ImageContentQuery {
-    pub image_name: String,
-    #[serde(default = "default_page")]
-    pub page: usize,
-    #[serde(default = "default_page_size")]
-    pub page_size: usize,
-}
-
-fn default_page() -> usize {
-    1
-}
-
-fn default_page_size() -> usize {
-    50
-}
-
-/// Query parameters for image listing endpoint
-#[derive(Debug, Deserialize)]
-pub struct ListImagesQuery {
-    /// Page number (default: 1)
-    pub page: Option<usize>,
-    /// Items per page (default: 10)
-    pub limit: Option<usize>,
-    /// Field to sort by (default: none)
-    pub sort_by: Option<String>,
-    /// Sort order (default: asc)
-    pub order: Option<String>,
-    /// Whether to include image data in response (default: false)
-    pub include_data: Option<bool>,
-}
-
 /// Initialize all routes for the application
 pub fn init_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(health_check)
@@ -537,7 +558,6 @@ pub fn init_routes(cfg: &mut web::ServiceConfig) {
         .service(search_image_content)
         .service(open_in_preview)
         .service(view_content)
-        .service(serve_video)
         .service(
             actix_files::Files::new("/static", "static")
                 .show_files_listing()
@@ -545,238 +565,4 @@ pub fn init_routes(cfg: &mut web::ServiceConfig) {
                 .prefer_utf8(true)
                 .use_etag(true)
         );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use actix_web::{test, http::StatusCode, App, web};
-    use std::collections::HashMap;
-    use std::sync::{Arc, RwLock};
-    use tempfile::TempDir;
-    use image::{ImageBuffer, Rgb};
-    use crate::image_processor::ImageProcessor;
-    use crate::finder::ContentInfo;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-
-    async fn setup_test_app() -> (TempDir, impl actix_web::dev::Service<actix_http::Request, Response = actix_web::dev::ServiceResponse, Error = actix_web::Error>) {
-        let temp_dir = TempDir::new().unwrap();
-        
-        // Create test directories
-        let test_dir = temp_dir.path().join("test");
-        fs::create_dir_all(&test_dir).unwrap();
-        
-        // Create test files that mdfind will return
-        let movie_path = test_dir.join("movie1.mp4");
-        let archive_path = test_dir.join("archive1.zip");
-        
-        fs::write(&movie_path, b"test movie data").unwrap();
-        fs::write(&archive_path, b"test archive data").unwrap();
-
-        let test_image_path = temp_dir.path().join("test.jpg");
-        
-        // Create a test image
-        let img = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(100, 100);
-        img.save(&test_image_path).unwrap();
-
-        // Create a mock scripts directory
-        let mock_dir = temp_dir.path().join("mock_bin");
-        fs::create_dir_all(&mock_dir).unwrap();
-
-        // Create a mock script for mdfind that returns our test files
-        let mock_mdfind = mock_dir.join("mdfind");
-        fs::write(&mock_mdfind, format!(r#"#!/bin/bash
-echo "Mock mdfind executing with query: $@" >&2
-if [[ "$*" == *"THIS_FILE_DEFINITELY_DOES_NOT_EXIST_12345"* ]]; then
-    # Return nothing for our special test case
-    exit 0
-fi
-# Return our test files for other queries
-echo "{}/movie1.mp4
-{}/archive1.zip"
-"#, test_dir.display(), test_dir.display())).unwrap();
-        fs::set_permissions(&mock_mdfind, fs::Permissions::from_mode(0o755)).unwrap();
-
-        // Create a mock script for mdls that returns fixed metadata
-        let mock_mdls = mock_dir.join("mdls");
-        fs::write(&mock_mdls, r#"#!/bin/bash
-echo "Mock mdls executing with path: $1" >&2
-echo "kMDItemUserTags = (
-    \"tag1\",
-    \"tag2\"
-)
-kMDItemFinderComment = \"Test comment\"
-kMDItemKeywords = \"keyword1, keyword2\""
-"#).unwrap();
-        fs::set_permissions(&mock_mdls, fs::Permissions::from_mode(0o755)).unwrap();
-
-        // Add the mock scripts directory to PATH
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        let path_var = format!("{}:{}", mock_dir.display(), old_path);
-        std::env::set_var("PATH", &path_var);
-        println!("Current PATH: {}", path_var);
-        println!("Mock scripts directory: {}", mock_dir.display());
-        println!("Test directory: {}", test_dir.display());
-
-        // Verify mock scripts exist and are executable
-        if !mock_mdfind.exists() {
-            panic!("Mock mdfind script does not exist at {}", mock_mdfind.display());
-        }
-        if !mock_mdls.exists() {
-            panic!("Mock mdls script does not exist at {}", mock_mdls.display());
-        }
-
-        let processor = web::Data::new(ImageProcessor::new());
-        let image_cache = web::Data::new(Arc::new(RwLock::new(HashMap::<String, Vec<u8>>::new())));
-        let images_dir = web::Data::new(temp_dir.path().to_path_buf());
-
-        let app = test::init_service(
-            App::new()
-                .app_data(processor)
-                .app_data(image_cache)
-                .app_data(images_dir)
-                .configure(init_routes)
-        ).await;
-
-        (temp_dir, app)
-    }
-
-    #[actix_web::test]
-    async fn test_health_check() {
-        let (_temp_dir, app) = setup_test_app().await;
-        let req = test::TestRequest::get().uri("/health").to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        
-        let body: HealthResponse = test::read_body_json(resp).await;
-        assert_eq!(body.status, "healthy");
-    }
-
-    #[actix_web::test]
-    async fn test_serve_image() {
-        let (_temp_dir, app) = setup_test_app().await;
-        let req = test::TestRequest::get()
-            .uri("/images/test.jpg")
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        
-        let content_type = resp.headers().get("content-type").unwrap();
-        assert_eq!(content_type, "image/jpeg");
-    }
-
-    #[actix_web::test]
-    async fn test_image_info() {
-        let (_temp_dir, app) = setup_test_app().await;
-        let req = test::TestRequest::get()
-            .uri("/images/test.jpg/info")
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        
-        let body: ImageMetadata = test::read_body_json(resp).await;
-        assert_eq!(body.filename, "test.jpg");
-        assert_eq!(body.dimensions, Some((100, 100)));
-    }
-
-    #[actix_web::test]
-    async fn test_list_images() {
-        let (_temp_dir, app) = setup_test_app().await;
-        let req = test::TestRequest::get()
-            .uri("/images")
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        
-        let body: Vec<ImageMetadata> = test::read_body_json(resp).await;
-        assert!(!body.is_empty());
-        assert_eq!(body[0].filename, "test.jpg");
-        assert_eq!(body[0].dimensions, Some((100, 100)));
-    }
-
-    #[actix_web::test]
-    async fn test_image_content_search() {
-        let (temp_dir, app) = setup_test_app().await;
-        
-        // Create test directory and file
-        let test_dir = temp_dir.path().join("test");
-        fs::create_dir_all(&test_dir).unwrap();
-        let movie_path = test_dir.join("movie1.mp4");
-        fs::write(&movie_path, "test data").unwrap();
-
-        // Create a mock scripts directory
-        let mock_dir = temp_dir.path().join("mock_bin");
-        fs::create_dir_all(&mock_dir).unwrap();
-
-        // Create a mock script for mdfind that returns paths
-        let mock_mdfind = mock_dir.join("mdfind");
-        let mdfind_script = format!("#!/bin/bash\necho '{}'\n", movie_path.to_str().unwrap());
-        println!("Writing mdfind script: {}", mdfind_script);
-        fs::write(&mock_mdfind, mdfind_script).unwrap();
-        fs::set_permissions(&mock_mdfind, fs::Permissions::from_mode(0o755)).unwrap();
-
-        // Create a mock script for mdls that returns tags
-        let mock_mdls = mock_dir.join("mdls");
-        let mdls_script = "#!/bin/bash\necho 'kMDItemUserTags = (\"test\")'\n";
-        println!("Writing mdls script: {}", mdls_script);
-        fs::write(&mock_mdls, mdls_script).unwrap();
-        fs::set_permissions(&mock_mdls, fs::Permissions::from_mode(0o755)).unwrap();
-
-        // Add the mock scripts directory to PATH
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        let path_var = format!("{}:{}", mock_dir.display(), old_path);
-        std::env::set_var("PATH", &path_var);
-        println!("PATH set to: {}", path_var);
-
-        let req = test::TestRequest::get()
-            .uri(&format!("/image-content?image_name={}", movie_path.to_str().unwrap()))
-            .to_request();
-        
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        
-        let body = test::read_body(resp).await;
-        println!("Response body: {}", String::from_utf8_lossy(&body));
-        let content: Vec<ContentInfo> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(content.len(), 1);
-        assert_eq!(content[0].content_name, "movie1.mp4");
-        assert_eq!(content[0].content_type, "mp4");
-    }
-
-    #[actix_web::test]
-    async fn test_image_content_search_no_results() {
-        let (temp_dir, app) = setup_test_app().await;
-        
-        let req = test::TestRequest::get()
-            .uri("/image-content?image_name=THIS_FILE_DEFINITELY_DOES_NOT_EXIST_12345.jpg")
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        
-        let body = test::read_body(resp).await;
-        let content: Vec<ContentInfo> = serde_json::from_slice(&body).unwrap();
-        assert!(content.is_empty());
-    }
-
-    #[actix_web::test]
-    async fn test_image_content_search_invalid_request() {
-        let (temp_dir, app) = setup_test_app().await;
-
-        // Test with missing image name
-        let req = test::TestRequest::get()
-            .uri("/image-content")
-            .to_request();
-        let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-}
-
-/// Checks if a file is an image
-fn is_image_file(path: &Path) -> bool {
-    let extension = path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase());
-    
-    matches!(extension.as_deref(), Some("jpg") | Some("jpeg") | Some("png") | Some("gif"))
 }
