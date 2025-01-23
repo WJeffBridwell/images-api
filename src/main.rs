@@ -60,16 +60,8 @@ async fn main() -> std::io::Result<()> {
     let db = web::Data::new(client.database("media"));
     log::info!("Connected to MongoDB");
 
-    // Create images directory if it doesn't exist
-    let images_dir = std::env::var("IMAGES_DIR").unwrap_or_else(|_| "./images".to_string());
-    let images_dir = std::path::PathBuf::from(images_dir);
-    if !images_dir.exists() {
-        std::fs::create_dir_all(&images_dir)?;
-    }
-
     let processor = web::Data::new(ImageProcessor::new());
     let image_cache = web::Data::new(Arc::new(RwLock::new(ImageCache::new())));
-    let images_dir = web::Data::new(images_dir);
 
     HttpServer::new(move || {
         let cors = Cors::default()
@@ -80,7 +72,6 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(processor.clone())
             .app_data(image_cache.clone())
-            .app_data(images_dir.clone())
             .app_data(db.clone())
             .wrap(Logger::default())
             .wrap(cors)
@@ -89,7 +80,10 @@ async fn main() -> std::io::Result<()> {
     })
     .bind(("192.168.86.242", 8081))?
     .run()
-    .await
+    .await?;
+
+    log::info!("Server stopped");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -101,12 +95,10 @@ mod tests {
     async fn test_app_configuration() {
         let processor = web::Data::new(ImageProcessor::new());
         let image_cache = web::Data::new(Arc::new(RwLock::new(HashMap::<String, Vec<u8>>::new())));
-        let images_dir = web::Data::new(std::path::PathBuf::from("./test_images"));
 
         let app = App::new()
             .app_data(processor)
             .app_data(image_cache)
-            .app_data(images_dir)
             .service(handlers::health_check);
 
         let app = test::init_service(app).await;

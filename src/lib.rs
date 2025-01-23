@@ -1,6 +1,7 @@
 pub mod handlers;
 pub mod image_processor;
 pub mod finder;
+pub mod config;
 
 // Re-export main types
 pub use image_processor::ImageProcessor;

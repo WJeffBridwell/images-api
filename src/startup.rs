@@ -10,7 +10,7 @@ pub async fn run(images_dir: PathBuf) -> std::io::Result<actix_web::dev::Server>
     let client = Client::with_uri_str("mongodb://localhost:27017")
         .await
         .expect("Failed to connect to MongoDB");
-    let db = client.database("models");
+    let db = client.database("media");
     let db = web::Data::new(db);
     
     let server = HttpServer::new(move || {

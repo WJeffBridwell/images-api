@@ -45,5 +45,10 @@ new-response.txt
 content_analysis.json
 test_data/
 
+# Test response files
+*.response.txt
+*.formatted.json
+mongodb_document.json
+
 # MongoDB
 mongodb-macos-aarch64-8.0.4/
