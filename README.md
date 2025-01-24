@@ -1,19 +1,17 @@
 # Images API
 
-A high-performance image serving and processing API built with Rust and Actix Web.
+A high-performance image serving and processing API built with Rust and Actix Web, designed to work with macOS Finder tags and metadata.
 
 ## Features
 
 - Fast image serving with async I/O
-- Image metadata extraction
+- Image metadata extraction including macOS Finder tags
 - Content search using macOS Finder API
-- Image processing (resize, rotate)
+- MongoDB integration for metadata storage
 - In-memory caching
 - Health check endpoint
-- Comprehensive test suite including:
-  - Unit tests
-  - Integration tests
-  - Performance benchmarks
+- Terraform-managed infrastructure
+- Comprehensive test suite
 
 ## Architecture
 
@@ -26,9 +24,12 @@ graph TD
     B --> C[Request Handlers]
     C --> D[Image Processor]
     D --> E[File System]
-    C --> F[In-Memory Cache]
+    C --> F[MongoDB]
     C --> G[Finder Module]
     G --> H[macOS Finder API]
+    F --> I[Metadata Store]
+    I --> J[Tags]
+    I --> K[File Info]
 ```
 
 ### Components
@@ -40,16 +41,16 @@ graph TD
 
 2. **Request Handlers (`handlers.rs`)**
    - `/health` - Service health check
-   - `/images` - List available images
-   - `/images/{filename}` - Serve specific image
-   - `/images/{filename}/info` - Get image metadata
-   - `/image-content` - Search related content
+   - `/gallery/images` - List available images with metadata
+   - `/gallery/proxy-image/{filename}` - Serve specific image
+   - `/gallery/images/{filename}/info` - Get image metadata
+   - `/gallery/content` - Search related content
 
-3. **Image Processor (`image_processor.rs`)**
+3. **Image Processor**
    - Image loading and validation
    - Format conversion
-   - Resizing and rotation
    - Metadata extraction
+   - Tag parsing from macOS attributes
 
 4. **Finder Module (`finder.rs`)**
    - Integration with macOS Finder API
@@ -57,24 +58,23 @@ graph TD
    - Metadata retrieval
    - Tag and keyword processing
 
-5. **Caching Layer**
-   - In-memory cache using `HashMap`
-   - Thread-safe with `Arc<RwLock<>>`
-   - Improves response times for frequently accessed images
+5. **MongoDB Integration**
+   - Stores image metadata and tags
+   - Supports efficient querying
+   - Maintains file information
+   - Preserves macOS Finder tags
 
 ### Data Flow
 
 1. Client makes HTTP request
 2. Actix Web routes request to appropriate handler
 3. For image requests:
-   - Handler checks cache for requested resource
-   - If not in cache:
-     - Image Processor loads from filesystem
-     - Processes image if needed (resize/rotate)
-     - Caches result for future requests
+   - Handler checks MongoDB for metadata
+   - Loads image from filesystem
+   - Returns image with cached metadata
 4. For content search:
-   - Handler calls Finder module
-   - Finder queries macOS Finder API
+   - Handler queries MongoDB
+   - Finder supplements with live filesystem data
    - Results are processed and returned
 5. Response sent to client
 
@@ -82,90 +82,150 @@ graph TD
 
 - Rust (latest stable version)
 - Cargo
-- macOS (for content search functionality)
+- MongoDB
+- macOS (for Finder API integration)
+- Terraform (for infrastructure management)
 
-## Getting Started
+## Infrastructure
+
+The application infrastructure is managed using Terraform:
+
+```hcl
+# Key Infrastructure Components
+- EC2 instance for API server
+- MongoDB Atlas cluster
+- Security groups and networking
+- S3 bucket for image storage (optional)
+```
+
+### Terraform Setup
+
+1. Initialize Terraform:
+```bash
+cd terraform
+terraform init
+```
+
+2. Review the plan:
+```bash
+terraform plan
+```
+
+3. Apply changes:
+```bash
+terraform apply
+```
+
+## Development Setup
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/YOUR_USERNAME/images-api.git
+git clone https://github.com/WJeffBridwell/images-api.git
 cd images-api
 ```
 
-2. Build the project:
+2. Set up environment variables:
+```bash
+export MONGODB_URI="your_mongodb_connection_string"
+export RUST_LOG=debug
+```
+
+3. Build the project:
 ```bash
 cargo build
 ```
 
-3. Run the tests:
+4. Run tests:
+```bash
+# Unit tests
+cargo test
+
+# Integration tests
+cargo test --test '*'
+
+# With logging
+RUST_LOG=debug cargo test
+```
+
+## Deployment
+
+### Development Environment
+
+1. Deploy infrastructure:
+```bash
+cd terraform
+terraform workspace select dev
+terraform apply
+```
+
+2. Deploy application:
+```bash
+./scripts/deploy.sh dev
+```
+
+### Production Environment
+
+1. Deploy infrastructure:
+```bash
+cd terraform
+terraform workspace select prod
+terraform apply
+```
+
+2. Deploy application:
+```bash
+./scripts/deploy.sh prod
+```
+
+### Monitoring
+
+- Health endpoint: `GET /health`
+- Application logs: Set `RUST_LOG=debug`
+- MongoDB metrics via Atlas dashboard
+
+## Testing
+
+### Unit Tests
 ```bash
 cargo test
 ```
 
-4. Start the server:
+### Integration Tests
 ```bash
-cargo run
+cargo test --test '*'
 ```
 
-The server will start on `http://192.168.86.242:8081`
-
-## API Documentation
-
-The API is documented using OpenAPI 3.0 specification. View the full documentation at:
-- Local: http://192.168.86.242:8081/docs
-- Swagger UI: http://192.168.86.242:8081/swagger-ui
-
-Key endpoints:
-- `GET /health` - Health check
-- `GET /images` - List images
-- `GET /images/{filename}` - Get image
-- `GET /images/{filename}/info` - Get image metadata
-- `GET /image-content` - Search related content
-
-## Development
-
-### Running Tests
-
-Run all tests:
+### Load Testing
 ```bash
-cargo test
+# Using hey for HTTP load testing
+hey -n 1000 -c 50 http://localhost:8081/gallery/images
 ```
 
-Run specific test suite:
+### Manual Testing
+1. Start the server:
 ```bash
-cargo test [test_name]
+RUST_LOG=debug cargo run
 ```
 
-Run performance tests:
+2. Test endpoints:
 ```bash
-cargo test --test performance_tests
-```
+# List images
+curl http://localhost:8081/gallery/images
 
-### Code Organization
+# Get specific image
+curl http://localhost:8081/gallery/proxy-image/example.jpg
 
-```
-.
-├── src/
-│   ├── main.rs           # Application entry point
-│   ├── lib.rs           # Library exports
-│   ├── handlers.rs      # HTTP request handlers
-│   ├── image_processor.rs # Image processing logic
-│   ├── finder.rs        # Content search functionality
-│   └── tests/           # Test modules
-├── tests/
-│   └── performance_tests.rs # Performance test suite
-├── openapi.yaml         # API documentation
-└── README.md           # This file
+# Check health
+curl http://localhost:8081/health
 ```
 
 ## Contributing
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+1. Create a feature branch from `develop`
+2. Make changes and add tests
+3. Run full test suite
+4. Create pull request to `develop`
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is proprietary and confidential.
